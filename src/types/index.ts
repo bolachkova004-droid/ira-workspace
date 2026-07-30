@@ -10,3 +10,7 @@ export type Material={id:string;studentId:string;title:string;kind:'Статья
 
 export type TouchpointKind='Игра'|'Соцсеть'|'Taplink'|'Материал'|'Продукт'|'Ссылка'
 export type Touchpoint={id:string;title:string;kind:TouchpointKind;url:string;description:string;clicks:number;leads:number;active:boolean;pinned:boolean}
+
+export type ContentStage='Идея'|'Черновик'|'Готов'|'Опубликован'
+export type ContentPlatform='Threads'|'Telegram'|'Instagram'
+export type ContentItem={id:string;title:string;platform:ContentPlatform;stage:ContentStage;deadline:string;tags:string[];note:string}
