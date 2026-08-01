@@ -1,19 +1,10 @@
 {
-  "name": "Ira Workspace",
-  "short_name": "Ira",
-  "description": "Рабочее пространство преподавателя английского языка",
-  "start_url": "/ira-workspace/",
-  "scope": "/ira-workspace/",
-  "display": "standalone",
-  "background_color": "#fff8fb",
-  "theme_color": "#ef6f9d",
-  "lang": "ru",
-  "icons": [
-    {
-      "src": "icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
-  ]
+  "name":"Ira Workspace — Teacher Planner",
+  "short_name":"Ira Workspace",
+  "description":"Уроки, ученики, оплаты, домашнее и Telegram-напоминания в одном рабочем ежедневнике.",
+  "start_url":"./",
+  "display":"standalone",
+  "background_color":"#f7f4f0",
+  "theme_color":"#f7f4f0",
+  "icons":[{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
 }

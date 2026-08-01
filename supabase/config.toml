@@ -1,0 +1,13 @@
+project_id = "ira-workspace"
+
+[functions.process-notifications]
+verify_jwt = false
+
+[functions.telegram-webhook]
+verify_jwt = false
+
+[functions.student-data]
+verify_jwt = false
+
+[functions.teacher-workspace]
+verify_jwt = false
