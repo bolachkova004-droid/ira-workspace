@@ -1,0 +1,12 @@
+{
+  "name": "Ira Workspace",
+  "short_name": "Ira",
+  "description": "Рабочее пространство преподавателя английского языка",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fff8fb",
+  "theme_color": "#ef6f9d",
+  "lang": "ru",
+  "icons": [{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}

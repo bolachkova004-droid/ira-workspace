@@ -1,3 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-export default defineConfig({base:'/ira-workspace/',plugins:[react()]})
+
+// Relative asset paths keep the build working on GitHub Pages even if the
+// repository name or publication path changes.
+export default defineConfig({
+  base: './',
+  plugins: [react()]
+})
