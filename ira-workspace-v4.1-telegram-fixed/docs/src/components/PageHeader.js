@@ -1,0 +1,2 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+export default function PageHeader({ eyebrow = 'Ira Workspace', title, subtitle, action }) { return _jsxs("header", { className: "page-header", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: eyebrow }), _jsx("h1", { children: title }), subtitle && _jsx("p", { className: "muted", children: subtitle })] }), action] }); }
