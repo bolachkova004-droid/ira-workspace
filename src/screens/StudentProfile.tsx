@@ -1,3 +1,76 @@
-import {ArrowLeft,BookOpen,CalendarDays,ExternalLink,MessageCircle,Package,Plus,Save,Trash2} from 'lucide-react';import {useState} from 'react';import {Link,useNavigate,useParams} from 'react-router-dom';import Modal from '../components/Modal';import type {Lesson,Material,Student} from '../types'
-type P={students:Student[];lessons:Lesson[];materials:Material[];updateStudent:(x:Student)=>void;deleteStudent:(id:string)=>void;addMaterial:(x:Omit<Material,'id'>)=>void;deleteMaterial:(id:string)=>void}
-export default function StudentProfile({students,lessons,materials,updateStudent,deleteStudent,addMaterial,deleteMaterial}:P){const{id}=useParams();const nav=useNavigate();const s=students.find(x=>x.id===id);const[tab,setTab]=useState<'overview'|'lessons'|'materials'|'notes'>('overview');const[edit,setEdit]=useState(false);const[mat,setMat]=useState(false);if(!s)return <section className="screen"><p>Ученик не найден.</p></section>;const history=lessons.filter(l=>l.studentId===s.id).sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time));const save=(e:React.FormEvent<HTMLFormElement>)=>{e.preventDefault();const f=new FormData(e.currentTarget);updateStudent({...s,name:String(f.get('name')),level:String(f.get('level')),goal:String(f.get('goal')),rate:Number(f.get('rate')),balance:Number(f.get('balance')),telegram:String(f.get('telegram')),interests:String(f.get('interests')),strengths:String(f.get('strengths')),challenges:String(f.get('challenges')),note:String(f.get('note')),packageTotal:Number(f.get('packageTotal')),packageUsed:Number(f.get('packageUsed'))});setEdit(false)};return <section className="screen"><Link className="back" to="/students"><ArrowLeft size={18}/>К ученикам</Link><div className="profile-hero"><div className="avatar large">{s.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</div><div className="grow"><p className="eyebrow">{s.status} · {s.level}</p><h1>{s.name}</h1><p className="muted">{s.goal}</p></div><button className="secondary" onClick={()=>setEdit(true)}>Редактировать</button></div><div className="profile-stats"><article><Package/><span>Пакет</span><strong>{s.packageUsed}/{s.packageTotal}</strong></article><article><CalendarDays/><span>Баланс</span><strong className={s.balance<0?'danger':''}>{s.balance.toLocaleString('ru-RU')} ₽</strong></article><article><MessageCircle/><span>Telegram</span><strong>{s.telegram||'—'}</strong></article></div><div className="tabs">{(['overview','lessons','materials','notes'] as const).map(x=><button className={tab===x?'active':''} onClick={()=>setTab(x)} key={x}>{x==='overview'?'Обзор':x==='lessons'?'Уроки':x==='materials'?'Материалы':'Заметки'}</button>)}</div>{tab==='overview'&&<div className="two-col"><section className="panel"><span className="kicker">Портрет ученика</span><dl className="details"><div><dt>Интересы</dt><dd>{s.interests||'Не заполнено'}</dd></div><div><dt>Сильные стороны</dt><dd>{s.strengths||'Не заполнено'}</dd></div><div><dt>Что даётся сложно</dt><dd>{s.challenges||'Не заполнено'}</dd></div></dl></section><section className="panel"><span className="kicker">Перед следующим уроком</span><h2>{history.find(l=>l.status==='Запланирован')?.topic||'Урок пока не запланирован'}</h2><p>{history.find(l=>l.status==='Запланирован')?.plan}</p>{history.find(l=>l.status==='Запланирован')&&<Link className="primary inline" to={`/lesson/${history.find(l=>l.status==='Запланирован')!.id}`}>Открыть подготовку</Link>}</section></div>}{tab==='lessons'&&<div className="panel"><div className="history">{history.map(l=><Link to={`/lesson/${l.id}`} key={l.id}><div><strong>{l.topic}</strong><span>{l.date} · {l.time}</span></div><span className="status">{l.status}</span></Link>)}</div></div>}{tab==='materials'&&<div className="panel"><div className="section-head"><h2>Материалы ученика</h2><button className="primary" onClick={()=>setMat(true)}><Plus size={16}/>Добавить</button></div><div className="material-list">{materials.filter(m=>m.studentId===s.id).map(m=><article key={m.id}><BookOpen/><div><strong>{m.title}</strong><span>{m.kind}</span></div><a href={m.url}><ExternalLink size={17}/></a><button className="icon-btn danger" onClick={()=>deleteMaterial(m.id)}><Trash2 size={17}/></button></article>)}</div></div>}{tab==='notes'&&<div className="panel prose"><h2>Рабочая заметка</h2><p>{s.note||'Заметок пока нет.'}</p></div>}{edit&&<Modal title="Редактировать ученика" onClose={()=>setEdit(false)}><form className="form" onSubmit={save}><label>Имя<input name="name" defaultValue={s.name}/></label><div className="form-row"><label>Уровень<input name="level" defaultValue={s.level}/></label><label>Стоимость<input name="rate" type="number" defaultValue={s.rate}/></label></div><label>Цель<input name="goal" defaultValue={s.goal}/></label><div className="form-row"><label>Баланс<input name="balance" type="number" defaultValue={s.balance}/></label><label>Telegram<input name="telegram" defaultValue={s.telegram}/></label></div><div className="form-row"><label>Занятий использовано<input name="packageUsed" type="number" defaultValue={s.packageUsed}/></label><label>Всего в пакете<input name="packageTotal" type="number" defaultValue={s.packageTotal}/></label></div><label>Интересы<input name="interests" defaultValue={s.interests}/></label><label>Сильные стороны<input name="strengths" defaultValue={s.strengths}/></label><label>Сложности<input name="challenges" defaultValue={s.challenges}/></label><label>Заметка<textarea name="note" defaultValue={s.note}/></label><div className="modal-actions"><button type="button" className="danger-btn" onClick={()=>{if(confirm('Удалить ученика?')){deleteStudent(s.id);nav('/students')}}}><Trash2 size={17}/>Удалить</button><button className="primary"><Save size={17}/>Сохранить</button></div></form></Modal>}{mat&&<Modal title="Новый материал" onClose={()=>setMat(false)}><form className="form" onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);addMaterial({studentId:s.id,title:String(f.get('title')),kind:String(f.get('kind')) as Material['kind'],url:String(f.get('url'))});setMat(false)}}><label>Название<input name="title" required/></label><label>Тип<select name="kind"><option>Статья</option><option>Видео</option><option>Рабочий лист</option><option>Ссылка</option></select></label><label>Ссылка<input name="url" defaultValue="#"/></label><button className="primary wide">Добавить</button></form></Modal>}</section>}
+import {ArrowLeft,BookOpen,ExternalLink,MessageCircle,Pencil,Plus,Save,Trash2} from 'lucide-react'
+import {useState} from 'react'
+import {Link,useNavigate,useParams} from 'react-router-dom'
+import Modal from '../components/Modal'
+import Monster from '../components/Monster'
+import type {Homework,Lesson,Material,Payment,Student} from '../types'
+
+type Props={
+  students:Student[];lessons:Lesson[];materials:Material[];payments:Payment[];homeworks:Homework[]
+  updateStudent:(x:Student)=>void;deleteStudent:(id:string)=>void
+  addMaterial:(x:Omit<Material,'id'>)=>void;deleteMaterial:(id:string)=>void
+  updateHomework:(x:Homework)=>void
+}
+
+const prettyDate=(value:string)=>new Date(`${value}T12:00:00`).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})
+
+export default function StudentProfile({students,lessons,materials,payments,homeworks,updateStudent,deleteStudent,addMaterial,deleteMaterial,updateHomework}:Props){
+  const {id}=useParams();const nav=useNavigate();const student=students.find(x=>x.id===id)
+  const [edit,setEdit]=useState(false);const [materialModal,setMaterialModal]=useState(false)
+  if(!student)return <section className="screen"><p>Ученик не найден.</p></section>
+  const history=lessons.filter(item=>item.studentId===student.id).sort((a,b)=>(b.date+b.time).localeCompare(a.date+a.time))
+  const studentHomeworks=homeworks.filter(item=>item.studentId===student.id).sort((a,b)=>b.dueDate.localeCompare(a.dueDate))
+  const studentPayments=payments.filter(item=>item.studentId===student.id).sort((a,b)=>b.dueDate.localeCompare(a.dueDate))
+  const progress=Math.min(100,Math.round(student.packageUsed/Math.max(1,student.packageTotal)*100))
+  const streak=Math.min(12,Math.max(1,history.filter(item=>item.status==='Проведён').length+2))
+  const mistakeTags=student.challenges.split(/[,.;]/).map(x=>x.trim()).filter(Boolean).slice(0,3)
+  const interestTags=student.interests.split(/[,.;]/).map(x=>x.trim()).filter(Boolean).slice(0,5)
+  const unpaid=studentPayments.find(item=>item.status!=='Оплачено')
+  const save=(event:React.FormEvent<HTMLFormElement>)=>{event.preventDefault();const form=new FormData(event.currentTarget);updateStudent({...student,name:String(form.get('name')),level:String(form.get('level')),goal:String(form.get('goal')),rate:Number(form.get('rate')),balance:Number(form.get('balance')),telegram:String(form.get('telegram')),interests:String(form.get('interests')),strengths:String(form.get('strengths')),challenges:String(form.get('challenges')),note:String(form.get('note')),packageTotal:Number(form.get('packageTotal')),packageUsed:Number(form.get('packageUsed'))});setEdit(false)}
+
+  return <section className="screen rasmus-student">
+    <header className="inner-topbar"><Link className="top-icon plain" to="/students"><ArrowLeft/></Link><strong>Ученик</strong><button className="top-icon plain" onClick={()=>setEdit(true)}><Pencil/></button></header>
+
+    <section className="student-concept-head">
+      <div className="student-avatar">{student.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</div>
+      <div><h1>{student.name}</h1><p>{history.filter(x=>x.status==='Проведён').length} занятий · {student.telegram||'Telegram не привязан'}</p></div>
+    </section>
+
+    <section className="student-goal"><span>🎯</span><div><b>Цель</b><p>{student.goal}</p></div></section>
+    <div className="student-tags"><span className="active">{student.status}</span><span>Уровень {student.level}</span></div>
+
+    <section className="student-block">
+      <p className="eyebrow">Прогресс и цели</p>
+      <div className="progress-label"><span>{student.level} → следующий уровень</span><b>{progress}%</b></div>
+      <div className="student-progress"><i style={{width:`${progress}%`}}/></div>
+      <div className="mistake-tags">{mistakeTags.map(tag=><span key={tag}>{tag}</span>)}{!mistakeTags.length&&<span>Добавь зоны роста</span>}</div>
+    </section>
+
+    <section className="student-block">
+      <p className="eyebrow">Дисциплина и деньги</p>
+      <div className="student-money-grid"><article><span>Стрик посещений</span><strong>🔥 {streak}</strong></article><article className="money"><span>К оплате</span><strong>{(unpaid?.amount||Math.abs(Math.min(0,student.balance))).toLocaleString('ru-RU')} ₽</strong></article></div>
+      <div className="homework-concept-list">{studentHomeworks.slice(0,4).map(item=><button key={item.id} onClick={()=>updateHomework({...item,status:item.status==='Выполнено'?'Назначено':'Выполнено'})}><span><strong>{item.title}</strong><small>к {prettyDate(item.dueDate)}</small></span><b className={item.status==='Выполнено'?'done':item.status==='Просрочено'?'late':'wait'}>{item.status}</b></button>)}{!studentHomeworks.length&&<p className="empty-light">Домашних заданий пока нет.</p>}</div>
+      <div className="rasmus-aside"><Monster small/><p><b>Расмус:</b> {studentHomeworks.some(x=>x.status==='Просрочено')?'с посещениями всё хорошо, но одну домашку пора вернуть в фокус.':'ученик держит хороший темп — можно чуть поднять сложность.'}</p></div>
+    </section>
+
+    <section className="student-block">
+      <p className="eyebrow">Личное</p>
+      <div className="interest-tags">{interestTags.map((tag,index)=><span key={tag}>{['🏎️','🎧','🍳','📚','✈️'][index%5]} {tag}</span>)}</div>
+      <div className="personal-row"><span>Сильные стороны</span><b>{student.strengths||'Не заполнено'}</b></div>
+      <div className="personal-row"><span>Часовой пояс</span><b>{student.timezone}</b></div>
+    </section>
+
+    <section className="student-note">{student.note||'Добавь важную заметку об ученике.'}</section>
+
+    <section className="student-materials">
+      <div className="section-heading"><div><p className="eyebrow">Материалы</p><h2>Библиотека ученика</h2></div><button className="top-icon plain" onClick={()=>setMaterialModal(true)}><Plus/></button></div>
+      <div className="material-concept-list">{materials.filter(x=>x.studentId===student.id).map(item=><article key={item.id}><BookOpen/><span><strong>{item.title}</strong><small>{item.kind}</small></span><a href={item.url} target="_blank" rel="noreferrer"><ExternalLink/></a><button onClick={()=>deleteMaterial(item.id)}><Trash2/></button></article>)}</div>
+    </section>
+
+    <div className="student-quick-actions"><a className="primary" href={`https://t.me/${student.telegram.replace('@','')}`} target="_blank" rel="noreferrer"><MessageCircle/>Написать в Telegram</a><Link className="secondary" to="/calendar">Перенести урок</Link></div>
+
+    {edit&&<Modal title="Редактировать ученика" onClose={()=>setEdit(false)}><form className="form" onSubmit={save}><label>Имя<input name="name" defaultValue={student.name}/></label><div className="form-row"><label>Уровень<input name="level" defaultValue={student.level}/></label><label>Стоимость<input name="rate" type="number" defaultValue={student.rate}/></label></div><label>Цель<input name="goal" defaultValue={student.goal}/></label><div className="form-row"><label>Баланс<input name="balance" type="number" defaultValue={student.balance}/></label><label>Telegram<input name="telegram" defaultValue={student.telegram}/></label></div><div className="form-row"><label>Использовано<input name="packageUsed" type="number" defaultValue={student.packageUsed}/></label><label>Всего в пакете<input name="packageTotal" type="number" defaultValue={student.packageTotal}/></label></div><label>Интересы<input name="interests" defaultValue={student.interests}/></label><label>Сильные стороны<input name="strengths" defaultValue={student.strengths}/></label><label>Сложности<input name="challenges" defaultValue={student.challenges}/></label><label>Заметка<textarea name="note" defaultValue={student.note}/></label><div className="modal-actions"><button type="button" className="danger-btn" onClick={()=>{if(confirm('Удалить ученика?')){deleteStudent(student.id);nav('/students')}}}><Trash2/>Удалить</button><button className="primary"><Save/>Сохранить</button></div></form></Modal>}
+
+    {materialModal&&<Modal title="Новый материал" onClose={()=>setMaterialModal(false)}><form className="form" onSubmit={event=>{event.preventDefault();const form=new FormData(event.currentTarget);addMaterial({studentId:student.id,title:String(form.get('title')),kind:String(form.get('kind')) as Material['kind'],url:String(form.get('url'))});setMaterialModal(false)}}><label>Название<input name="title" required/></label><label>Тип<select name="kind"><option>Статья</option><option>Видео</option><option>Рабочий лист</option><option>Ссылка</option></select></label><label>Ссылка<input name="url" defaultValue="https://"/></label><button className="primary wide">Добавить</button></form></Modal>}
+  </section>
+}

@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.js';
 import AppErrorBoundary from './components/AppErrorBoundary.js';
-
+import './styles.css';
 import { initTelegram } from './telegram.js';
 initTelegram();
 const root = document.getElementById('root');

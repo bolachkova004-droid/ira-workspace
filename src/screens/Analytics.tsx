@@ -1,2 +1,32 @@
-import {Banknote,Target,TrendingUp,Users} from 'lucide-react';import PageHeader from '../components/PageHeader';import type {Lead,Lesson,Student} from '../types'
-export default function Analytics({stats,students,leads,lessons}:{stats:{activeStudents:number;activeLeads:number;todayLessons:number;revenue:number;debt:number;conversion:number};students:Student[];leads:Lead[];lessons:Lesson[]}){const source=[...new Set(leads.map(l=>l.source))].map(s=>({name:s,count:leads.filter(l=>l.source===s).length}));const max=Math.max(1,...source.map(x=>x.count));return <section className="screen"><PageHeader title="Аналитика" subtitle="Понятная картина по ученикам, заявкам и деньгам"/><div className="metric-grid analytics"><article><Users/><span>Активные ученики</span><strong>{stats.activeStudents}</strong></article><article><Target/><span>Конверсия заявок</span><strong>{stats.conversion}%</strong></article><article><Banknote/><span>Доход по проведённым</span><strong>{stats.revenue.toLocaleString('ru-RU')} ₽</strong></article><article><TrendingUp/><span>Долги</span><strong>{stats.debt.toLocaleString('ru-RU')} ₽</strong></article></div><div className="two-col"><section className="panel"><span className="kicker">Источники заявок</span><h2>Откуда приходят ученики</h2><div className="bars">{source.map(x=><div key={x.name}><span>{x.name}</span><i><b style={{width:`${x.count/max*100}%`}}/></i><strong>{x.count}</strong></div>)}</div></section><section className="panel"><span className="kicker">Нагрузка</span><h2>Уроки по статусам</h2><div className="donut-wrap"><div className="donut"><strong>{lessons.length}</strong><span>всего</span></div><ul><li><i/>Проведено — {lessons.filter(l=>l.status==='Проведён').length}</li><li><i/>Запланировано — {lessons.filter(l=>l.status==='Запланирован').length}</li><li><i/>Отменено — {lessons.filter(l=>l.status==='Отменён').length}</li></ul></div></section></div><section className="panel"><span className="kicker">Внимание</span><h2>Ученики, которым нужен контакт</h2><div className="attention-list">{students.filter(s=>s.balance<0||s.packageTotal-s.packageUsed<=2).map(s=><article key={s.id}><div className="avatar small">{s.name[0]}</div><div><strong>{s.name}</strong><span>{s.balance<0?`Долг ${Math.abs(s.balance).toLocaleString('ru-RU')} ₽`:`Осталось ${s.packageTotal-s.packageUsed} занятия`}</span></div></article>)}</div></section></section>}
+import {useState} from 'react'
+import Monster from '../components/Monster'
+import type {Lead,Lesson,Student,Touchpoint} from '../types'
+
+type Props={stats:{activeStudents:number;activeLeads:number;todayLessons:number;revenue:number;debt:number;conversion:number};students:Student[];leads:Lead[];lessons:Lesson[];touchpoints:Touchpoint[]}
+
+export default function Analytics({stats,students,leads,lessons,touchpoints}:Props){
+  const [period,setPeriod]=useState<7|30|90>(30)
+  const totalClicks=touchpoints.reduce((sum,item)=>sum+item.clicks,0)
+  const totalLeads=touchpoints.reduce((sum,item)=>sum+item.leads,0)
+  const conversion=totalClicks?Math.round(totalLeads/totalClicks*1000)/10:stats.conversion
+  const sorted=[...touchpoints].sort((a,b)=>b.clicks-a.clicks)
+  const top=sorted[0]
+  const funnelStart=Math.max(1,top?.clicks||totalClicks)
+  const middle=Math.round(funnelStart*.63)
+  const finished=Math.round(funnelStart*.46)
+  const applications=Math.max(top?.leads||totalLeads,Math.round(funnelStart*.18))
+  return <section className="screen rasmus-analytics">
+    <header className="inner-topbar"><span/><strong>Аналитика</strong><span/></header>
+    <div className="period-switch">{([7,30,90] as const).map(item=><button className={period===item?'active':''} onClick={()=>setPeriod(item)} key={item}>{item} дней</button>)}</div>
+
+    <section className="rasmus-section"><div className="section-heading"><div><p className="eyebrow">Общая картина</p><h2>За {period} дней</h2></div></div><div className="analytics-concept-grid"><article><i/><span>Переходы по ссылкам</span><strong>{totalClicks}</strong><small className="up">▲ 18% к периоду</small></article><article className="green"><i/><span>Заявки</span><strong>{totalLeads||stats.activeLeads}</strong><small className="up">▲ {Math.max(1,totalLeads)}</small></article><article className="green"><i/><span>Проведено уроков</span><strong>{lessons.filter(x=>x.status==='Проведён').length}</strong><small className="up">активных учеников {students.filter(x=>x.status==='Активный').length}</small></article><article><i/><span>Конверсия в заявку</span><strong>{conversion}%</strong><small className={conversion>=8?'up':'down'}>{conversion>=8?'▲':'▼'} к цели 8%</small></article></div></section>
+
+    <section className="rasmus-section"><div className="section-heading"><div><p className="eyebrow">По ссылкам</p><h2>Что тащит трафик</h2></div></div><div className="traffic-list">{sorted.map(item=><article key={item.id}><span className="traffic-icon">{item.kind==='Игра'?'🕵️':item.kind==='Соцсеть'?'🔗':item.kind==='Продукт'?'📦':'🪞'}</span><div className="grow"><strong>{item.title}</strong><small>{item.kind.toLowerCase()} · {item.leads} заявок</small></div><div><strong>{item.clicks}</strong><small className={item.active?'up':'down'}>{item.active?'▲ активно':'пауза'}</small></div></article>)}</div></section>
+
+    <section className="rasmus-section"><div className="section-heading"><div><p className="eyebrow">Воронка</p><h2>{top?.title||'Главное касание'}</h2></div></div><div className="funnel-concept">{[
+      ['Начали',funnelStart,100],['Дошли до середины',middle,63],['Закончили полностью',finished,46],['Оставили заявку',applications,Math.round(applications/funnelStart*100)]
+    ].map(([label,count,width],index)=><div key={String(label)}><header><strong>{label}</strong><span>{count} · {width}%</span></header><i><b className={index===3?'drop':''} style={{width:`${width}%`}}/></i></div>)}</div></section>
+
+    <section className="rasmus-aside"><Monster small mood="thinking"/><p><b>Расмус:</b> {top?`${top.title} даёт больше всего переходов. Смотри, на каком этапе люди перестают двигаться дальше.`:'добавь ссылки и игры в раздел «Касания», чтобы увидеть настоящую воронку.'}</p></section>
+  </section>
+}

@@ -1,4 +1,4 @@
-# Подключение Supabase — Ira Workspace v5
+# Подключение Supabase — Ira Workspace v6
 
 Эта часть нужна один раз, чтобы данные хранились не только на одном устройстве, а уведомления отправлялись автоматически.
 
@@ -6,7 +6,7 @@
 
 1. Откройте Supabase Dashboard и создайте новый проект.
 2. В разделе **SQL Editor** откройте файл:
-   `supabase/migrations/202608010001_ira_workspace_v5.sql`
+   `сначала `supabase/migrations/202608010001_ira_workspace_v5.sql`, затем `supabase/migrations/202608020001_rasmus_v6.sql``
 3. Скопируйте его целиком и нажмите **Run**.
 
 Схема создаёт учеников, уроки, оплаты, домашнее, личные ссылки, запросы переноса и очередь уведомлений. На всех публичных таблицах включён RLS.
@@ -93,7 +93,7 @@ select public.refresh_overdue_payments();
 ## 7. Проверка
 
 1. У ученика должен быть указан `telegram_id`.
-2. В таблице `notifications` создайте тестовую запись со `status = scheduled` и `send_at = now()`.
+2. В таблице `notifications` создайте тестовую запись со `status = scheduled`, `delivery_mode = auto` и `send_at = now()`.
 3. Запустите Cron job вручную.
 4. В Telegram должно прийти сообщение, а статус измениться на `sent`.
 

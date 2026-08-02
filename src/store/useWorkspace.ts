@@ -50,8 +50,8 @@ const homeworksSeed:Homework[]=[
 ]
 
 const notificationsSeed:Notification[]=[
-  {id:'n1',studentId:'s3',paymentId:'p3',kind:'payment_overdue',sendAt:new Date().toISOString(),status:'Запланировано',title:'Напоминание об оплате',message:'Иван, напоминаю об оплате занятия — 1 700 ₽. Если уже оплатили, просто пришлите чек ✨',createdAt:new Date().toISOString()},
-  {id:'n2',studentId:'s1',lessonId:'e1',kind:'lesson_2h',sendAt:isoAt(today,'08:00'),status:'Запланировано',title:'Урок через 2 часа',message:'Анна, сегодня в 10:00 у нас английский. Ссылка на занятие будет в личном кабинете.',createdAt:new Date().toISOString()}
+  {id:'n1',studentId:'s3',paymentId:'p3',kind:'payment_overdue',sendAt:new Date().toISOString(),status:'Запланировано',deliveryMode:'На проверку',title:'Напоминание об оплате',message:'Иван, напоминаю об оплате занятия — 1 700 ₽. Если уже оплатили, просто пришлите чек ✨',createdAt:new Date().toISOString()},
+  {id:'n2',studentId:'s1',lessonId:'e1',kind:'lesson_2h',sendAt:isoAt(today,'08:00'),status:'Запланировано',deliveryMode:'Авто',title:'Урок через 2 часа',message:'Анна, сегодня в 10:00 у нас английский. Ссылка на занятие будет в личном кабинете.',createdAt:new Date().toISOString()}
 ]
 
 const rescheduleSeed:RescheduleRequest[]=[]
@@ -78,36 +78,36 @@ const materialsSeed:Material[]=[
 ]
 
 function readAny<T>(keys:string[],fallback:T):T{for(const key of keys){try{const value=localStorage.getItem(key);if(value!==null)return JSON.parse(value) as T}catch{/* use next key */}}return fallback}
-function initialDark(){try{const saved=localStorage.getItem('ira.v5.dark')??localStorage.getItem('ira.v4.dark');if(saved!==null)return JSON.parse(saved) as boolean}catch{/* use environment */}return getTelegramApp()?.colorScheme==='dark'||window.matchMedia?.('(prefers-color-scheme: dark)').matches||false}
+function initialDark(){try{const saved=localStorage.getItem('ira.v6.dark')??localStorage.getItem('ira.v5.dark')??localStorage.getItem('ira.v4.dark');if(saved!==null)return JSON.parse(saved) as boolean}catch{/* use environment */}return getTelegramApp()?.colorScheme==='dark'||window.matchMedia?.('(prefers-color-scheme: dark)').matches||false}
 
 export function useWorkspace(){
-  const [contentItems,setContentItems]=useState<ContentItem[]>(()=>readAny(['ira.v5.content','ira.v4.content','ira.v3.content'],contentSeed))
-  const [touchpoints,setTouchpoints]=useState<Touchpoint[]>(()=>readAny(['ira.v5.touchpoints','ira.v4.touchpoints','ira.v3.touchpoints'],touchpointsSeed))
-  const [students,setStudents]=useState<Student[]>(()=>readAny(['ira.v5.students','ira.v4.students','ira.v2.students'],studentsSeed).map(s=>({...s,accessToken:s.accessToken||createToken(),notificationsEnabled:s.notificationsEnabled!==false})))
-  const [leads,setLeads]=useState<Lead[]>(()=>readAny(['ira.v5.leads','ira.v4.leads','ira.v2.leads'],leadsSeed))
-  const [lessons,setLessons]=useState<Lesson[]>(()=>readAny(['ira.v5.lessons','ira.v4.lessons','ira.v2.lessons'],lessonsSeed))
-  const [tasks,setTasks]=useState<Task[]>(()=>readAny(['ira.v5.tasks','ira.v4.tasks','ira.v2.tasks'],tasksSeed))
-  const [materials,setMaterials]=useState<Material[]>(()=>readAny(['ira.v5.materials','ira.v4.materials','ira.v2.materials'],materialsSeed))
-  const [payments,setPayments]=useState<Payment[]>(()=>readAny(['ira.v5.payments'],paymentsSeed))
-  const [homeworks,setHomeworks]=useState<Homework[]>(()=>readAny(['ira.v5.homeworks'],homeworksSeed))
-  const [notifications,setNotifications]=useState<Notification[]>(()=>readAny(['ira.v5.notifications'],notificationsSeed))
-  const [rescheduleRequests,setRescheduleRequests]=useState<RescheduleRequest[]>(()=>readAny(['ira.v5.reschedule'],rescheduleSeed))
+  const [contentItems,setContentItems]=useState<ContentItem[]>(()=>readAny(['ira.v6.content','ira.v5.content','ira.v4.content','ira.v3.content'],contentSeed))
+  const [touchpoints,setTouchpoints]=useState<Touchpoint[]>(()=>readAny(['ira.v6.touchpoints','ira.v5.touchpoints','ira.v4.touchpoints','ira.v3.touchpoints'],touchpointsSeed))
+  const [students,setStudents]=useState<Student[]>(()=>readAny(['ira.v6.students','ira.v5.students','ira.v4.students','ira.v2.students'],studentsSeed).map(s=>({...s,accessToken:s.accessToken||createToken(),notificationsEnabled:s.notificationsEnabled!==false})))
+  const [leads,setLeads]=useState<Lead[]>(()=>readAny(['ira.v6.leads','ira.v5.leads','ira.v4.leads','ira.v2.leads'],leadsSeed))
+  const [lessons,setLessons]=useState<Lesson[]>(()=>readAny(['ira.v6.lessons','ira.v5.lessons','ira.v4.lessons','ira.v2.lessons'],lessonsSeed))
+  const [tasks,setTasks]=useState<Task[]>(()=>readAny(['ira.v6.tasks','ira.v5.tasks','ira.v4.tasks','ira.v2.tasks'],tasksSeed))
+  const [materials,setMaterials]=useState<Material[]>(()=>readAny(['ira.v6.materials','ira.v5.materials','ira.v4.materials','ira.v2.materials'],materialsSeed))
+  const [payments,setPayments]=useState<Payment[]>(()=>readAny(['ira.v6.payments','ira.v5.payments'],paymentsSeed))
+  const [homeworks,setHomeworks]=useState<Homework[]>(()=>readAny(['ira.v6.homeworks','ira.v5.homeworks'],homeworksSeed))
+  const [notifications,setNotifications]=useState<Notification[]>(()=>readAny(['ira.v6.notifications','ira.v5.notifications'],notificationsSeed).map(item=>({...item,deliveryMode:item.deliveryMode||(['payment_3d','payment_due','payment_overdue','package_low','custom'].includes(item.kind)?'На проверку':'Авто')})))
+  const [rescheduleRequests,setRescheduleRequests]=useState<RescheduleRequest[]>(()=>readAny(['ira.v6.reschedule','ira.v5.reschedule'],rescheduleSeed))
   const [dark,setDark]=useState(initialDark)
   const [cloudState,setCloudState]=useState<CloudState>('local')
   const cloudHydrated=useRef(false)
 
-  useEffect(()=>writeStorage('ira.v5.content',contentItems),[contentItems])
-  useEffect(()=>writeStorage('ira.v5.touchpoints',touchpoints),[touchpoints])
-  useEffect(()=>writeStorage('ira.v5.students',students),[students])
-  useEffect(()=>writeStorage('ira.v5.leads',leads),[leads])
-  useEffect(()=>writeStorage('ira.v5.lessons',lessons),[lessons])
-  useEffect(()=>writeStorage('ira.v5.tasks',tasks),[tasks])
-  useEffect(()=>writeStorage('ira.v5.materials',materials),[materials])
-  useEffect(()=>writeStorage('ira.v5.payments',payments),[payments])
-  useEffect(()=>writeStorage('ira.v5.homeworks',homeworks),[homeworks])
-  useEffect(()=>writeStorage('ira.v5.notifications',notifications),[notifications])
-  useEffect(()=>writeStorage('ira.v5.reschedule',rescheduleRequests),[rescheduleRequests])
-  useEffect(()=>{writeStorage('ira.v5.dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';applyTelegramChrome(dark)},[dark])
+  useEffect(()=>writeStorage('ira.v6.content',contentItems),[contentItems])
+  useEffect(()=>writeStorage('ira.v6.touchpoints',touchpoints),[touchpoints])
+  useEffect(()=>writeStorage('ira.v6.students',students),[students])
+  useEffect(()=>writeStorage('ira.v6.leads',leads),[leads])
+  useEffect(()=>writeStorage('ira.v6.lessons',lessons),[lessons])
+  useEffect(()=>writeStorage('ira.v6.tasks',tasks),[tasks])
+  useEffect(()=>writeStorage('ira.v6.materials',materials),[materials])
+  useEffect(()=>writeStorage('ira.v6.payments',payments),[payments])
+  useEffect(()=>writeStorage('ira.v6.homeworks',homeworks),[homeworks])
+  useEffect(()=>writeStorage('ira.v6.notifications',notifications),[notifications])
+  useEffect(()=>writeStorage('ira.v6.reschedule',rescheduleRequests),[rescheduleRequests])
+  useEffect(()=>{writeStorage('ira.v6.dark',dark);document.documentElement.dataset.theme=dark?'dark':'light';applyTelegramChrome(dark)},[dark])
 
   useEffect(()=>{
     let cancelled=false
@@ -139,7 +139,7 @@ export function useWorkspace(){
   useEffect(()=>{
     if(!cloudHydrated.current||cloudState!=='connected')return
     const timer=window.setTimeout(()=>{
-      saveTeacherSnapshot({version:5,students,leads,lessons,tasks,materials,touchpoints,contentItems,payments,homeworks,notifications,rescheduleRequests,dark,updatedAt:new Date().toISOString()}).catch(error=>{console.warn('[Ira Workspace] Cloud save failed',error);setCloudState('error')})
+      saveTeacherSnapshot({version:6,students,leads,lessons,tasks,materials,touchpoints,contentItems,payments,homeworks,notifications,rescheduleRequests,dark,updatedAt:new Date().toISOString()}).catch(error=>{console.warn('[Ira Workspace] Cloud save failed',error);setCloudState('error')})
     },900)
     return()=>window.clearTimeout(timer)
   },[cloudState,students,leads,lessons,tasks,materials,touchpoints,contentItems,payments,homeworks,notifications,rescheduleRequests,dark])
@@ -155,7 +155,7 @@ export function useWorkspace(){
         const student=students.find(item=>item.id===payment.studentId);if(!student||student.notificationsEnabled===false||payment.status==='Оплачено')continue
         if(payment.dueDate===inThreeDays&&!has(student.id,'payment_3d',payment.id))next.unshift({id:createId(),studentId:student.id,paymentId:payment.id,kind:'payment_3d',sendAt:createdAt,status:'Запланировано',title:'Оплата через 3 дня',message:`${student.name.split(' ')[0]}, через 3 дня плановая оплата — ${payment.amount.toLocaleString('ru-RU')} ₽.`,createdAt})
         if(payment.dueDate===todayKey&&!has(student.id,'payment_due',payment.id))next.unshift({id:createId(),studentId:student.id,paymentId:payment.id,kind:'payment_due',sendAt:createdAt,status:'Запланировано',title:'Сегодня день оплаты',message:`${student.name.split(' ')[0]}, напоминаю о плановой оплате — ${payment.amount.toLocaleString('ru-RU')} ₽ ✨`,createdAt})
-        if(payment.dueDate<todayKey&&!has(student.id,'payment_overdue',payment.id))next.unshift({id:createId(),studentId:student.id,paymentId:payment.id,kind:'payment_overdue',sendAt:createdAt,status:'Запланировано',title:'Напоминание об оплате',message:`${student.name.split(' ')[0]}, мягко напоминаю об оплате — ${payment.amount.toLocaleString('ru-RU')} ₽. Если уже оплатили, просто пришлите чек.`,createdAt})
+        if(payment.dueDate<todayKey&&!has(student.id,'payment_overdue',payment.id))next.unshift({id:createId(),studentId:student.id,paymentId:payment.id,kind:'payment_overdue',sendAt:createdAt,status:'Запланировано',deliveryMode:'На проверку',title:'Напоминание об оплате',message:`${student.name.split(' ')[0]}, мягко напоминаю об оплате — ${payment.amount.toLocaleString('ru-RU')} ₽. Если уже оплатили, просто пришлите чек.`,createdAt})
       }
       for(const student of students){
         if(student.status!=='Активный'||student.notificationsEnabled===false||student.packageTotal-student.packageUsed>2||has(student.id,'package_low'))continue
@@ -191,7 +191,7 @@ export function useWorkspace(){
     return result
   },[students,lessons,payments,currentToday])
 
-  const queueNotification=(value:Omit<Notification,'id'|'createdAt'|'status'>)=>setNotifications(items=>[{...value,id:createId(),createdAt:new Date().toISOString(),status:'Запланировано'},...items])
+  const queueNotification=(value:Omit<Notification,'id'|'createdAt'|'status'>)=>setNotifications(items=>[{...value,id:createId(),createdAt:new Date().toISOString(),status:'Запланировано',deliveryMode:value.deliveryMode||'На проверку'},...items])
 
   return {
     students,leads,lessons,tasks,materials,touchpoints,contentItems,payments,homeworks,notifications,rescheduleRequests,dark,setDark,cloudState,stats,insights,
@@ -214,9 +214,9 @@ export function useWorkspace(){
         const cancelled=items.map(item=>item.lessonId===id&&item.status==='Запланировано'?{...item,status:'Отменено' as const}:item)
         if(!notify||!lesson.studentId)return cancelled
         const starts=new Date(`${date}T${time}:00`).getTime();const now=Date.now();const createdAt=new Date().toISOString()
-        const next:Notification[]=[{id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_moved',sendAt:createdAt,status:'Запланировано',title:'Урок перенесён',message:`${lesson.student}, урок перенесён на ${new Date(`${date}T12:00:00`).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})} в ${time}.`,createdAt}]
-        if(starts-now>24*3600000)next.push({id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_24h',sendAt:new Date(starts-24*3600000).toISOString(),status:'Запланировано',title:'Урок завтра',message:`${lesson.student.split(' ')[0]}, завтра в ${time} у нас английский ✨`,createdAt})
-        if(starts-now>2*3600000)next.push({id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_2h',sendAt:new Date(starts-2*3600000).toISOString(),status:'Запланировано',title:'Урок через 2 часа',message:`${lesson.student.split(' ')[0]}, урок начнётся через 2 часа. Ссылка доступна в личном кабинете.`,createdAt})
+        const next:Notification[]=[{id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_moved',sendAt:createdAt,status:'Запланировано',deliveryMode:'Авто',title:'Урок перенесён',message:`${lesson.student}, урок перенесён на ${new Date(`${date}T12:00:00`).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})} в ${time}.`,createdAt}]
+        if(starts-now>24*3600000)next.push({id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_24h',sendAt:new Date(starts-24*3600000).toISOString(),status:'Запланировано',deliveryMode:'Авто',title:'Урок завтра',message:`${lesson.student.split(' ')[0]}, завтра в ${time} у нас английский ✨`,createdAt})
+        if(starts-now>2*3600000)next.push({id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_2h',sendAt:new Date(starts-2*3600000).toISOString(),status:'Запланировано',deliveryMode:'Авто',title:'Урок через 2 часа',message:`${lesson.student.split(' ')[0]}, урок начнётся через 2 часа. Ссылка доступна в личном кабинете.`,createdAt})
         return [...next,...cancelled]
       })
     },
@@ -227,7 +227,7 @@ export function useWorkspace(){
         const cancelled=items.map(item=>item.lessonId===id&&item.status==='Запланировано'?{...item,status:'Отменено' as const}:item)
         if(!notify||!lesson.studentId)return cancelled
         const createdAt=new Date().toISOString()
-        return [{id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_cancelled' as const,sendAt:createdAt,status:'Запланировано' as const,title:'Урок отменён',message:`${lesson.student}, урок ${lesson.date} в ${lesson.time} отменён. Я свяжусь с вами, чтобы выбрать новое время.`,createdAt},...cancelled]
+        return [{id:createId(),studentId:lesson.studentId,lessonId:id,kind:'lesson_cancelled' as const,sendAt:createdAt,status:'Запланировано' as const,deliveryMode:'Авто' as const,title:'Урок отменён',message:`${lesson.student}, урок ${lesson.date} в ${lesson.time} отменён. Я свяжусь с вами, чтобы выбрать новое время.`,createdAt},...cancelled]
       })
     },
     addTask:(title:string)=>setTasks(items=>[{id:createId(),title,due:'Сегодня',done:false,category:'Другое'},...items]),
@@ -248,6 +248,7 @@ export function useWorkspace(){
     deleteMaterial:(id:string)=>setMaterials(items=>items.filter(item=>item.id!==id)),
     queueNotification,
     cancelNotification:(id:string)=>setNotifications(items=>items.map(item=>item.id===id?{...item,status:'Отменено'}:item)),
+    approveNotification:(id:string)=>setNotifications(items=>items.map(item=>item.id===id?{...item,deliveryMode:'Авто',sendAt:new Date().toISOString(),status:'Запланировано'}:item)),
     markNotificationSent:(id:string)=>setNotifications(items=>items.map(item=>item.id===id?{...item,status:'Отправлено',sentAt:new Date().toISOString()}:item)),
     requestReschedule:(value:Omit<RescheduleRequest,'id'|'status'|'createdAt'>)=>{
       setRescheduleRequests(items=>[{...value,id:createId(),status:'Новая',createdAt:new Date().toISOString()},...items])
@@ -255,7 +256,7 @@ export function useWorkspace(){
       setTasks(items=>[{id:createId(),title:`Запрос переноса: ${student?.name||'ученик'} — ${lesson?.date||''}`,due:'Сегодня',done:false,category:'Урок'},...items])
     },
     updateRescheduleRequest:(value:RescheduleRequest)=>setRescheduleRequests(items=>items.map(item=>item.id===value.id?value:item)),
-    exportData:()=>JSON.stringify({version:5,exportedAt:new Date().toISOString(),students,leads,lessons,tasks,materials,touchpoints,contentItems,payments,homeworks,notifications,rescheduleRequests,dark},null,2),
+    exportData:()=>JSON.stringify({version:6,exportedAt:new Date().toISOString(),students,leads,lessons,tasks,materials,touchpoints,contentItems,payments,homeworks,notifications,rescheduleRequests,dark},null,2),
     importData:(raw:string)=>{const data=JSON.parse(raw);if(Array.isArray(data.students))setStudents(data.students);if(Array.isArray(data.leads))setLeads(data.leads);if(Array.isArray(data.lessons))setLessons(data.lessons);if(Array.isArray(data.tasks))setTasks(data.tasks);if(Array.isArray(data.materials))setMaterials(data.materials);if(Array.isArray(data.touchpoints))setTouchpoints(data.touchpoints);if(Array.isArray(data.contentItems))setContentItems(data.contentItems);if(Array.isArray(data.payments))setPayments(data.payments);if(Array.isArray(data.homeworks))setHomeworks(data.homeworks);if(Array.isArray(data.notifications))setNotifications(data.notifications);if(Array.isArray(data.rescheduleRequests))setRescheduleRequests(data.rescheduleRequests);if(typeof data.dark==='boolean')setDark(data.dark)},
     reset:()=>{Object.keys(localStorage).filter(key=>key.startsWith('ira.')).forEach(key=>localStorage.removeItem(key));location.reload()}
   }

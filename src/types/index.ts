@@ -62,7 +62,8 @@ export type Homework={id:string;studentId:string;lessonId?:string;title:string;d
 
 export type NotificationKind='lesson_24h'|'lesson_2h'|'lesson_15m'|'lesson_moved'|'lesson_cancelled'|'payment_3d'|'payment_due'|'payment_overdue'|'package_low'|'homework_new'|'homework_reminder'|'custom'
 export type NotificationStatus='Запланировано'|'Отправлено'|'Ошибка'|'Отменено'
-export type Notification={id:string;studentId:string;lessonId?:string;paymentId?:string;kind:NotificationKind;sendAt:string;status:NotificationStatus;title:string;message:string;createdAt:string;sentAt?:string}
+export type NotificationDeliveryMode='Авто'|'На проверку'
+export type Notification={id:string;studentId:string;lessonId?:string;paymentId?:string;kind:NotificationKind;sendAt:string;status:NotificationStatus;deliveryMode?:NotificationDeliveryMode;title:string;message:string;createdAt:string;sentAt?:string;lastError?:string}
 
 export type RescheduleRequestStatus='Новая'|'Принята'|'Отклонена'
 export type RescheduleRequest={id:string;studentId:string;lessonId:string;requestedDate:string;requestedTime:string;comment:string;status:RescheduleRequestStatus;createdAt:string}

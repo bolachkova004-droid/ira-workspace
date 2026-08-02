@@ -20,7 +20,7 @@ Deno.serve(async request=>{
     const notifications=Array.isArray(workspace.notifications)?workspace.notifications:[]
     let changed=false
     for(const item of notifications){
-      if(item.status!=='Запланировано'||new Date(item.sendAt)>new Date())continue
+      if(item.status!=='Запланировано'||item.deliveryMode==='На проверку'||new Date(item.sendAt)>new Date())continue
       const student=students.find((entry:any)=>entry.id===item.studentId)
       if(!student?.telegramId){
         item.status='Ошибка';item.lastError='У ученика не привязан Telegram';changed=true
@@ -47,6 +47,7 @@ Deno.serve(async request=>{
     .from('notifications')
     .select('id,title,message,attempts,student:students(telegram_id,name)')
     .eq('status','scheduled')
+    .eq('delivery_mode','auto')
     .lte('send_at',new Date().toISOString())
     .order('send_at',{ascending:true})
     .limit(100)

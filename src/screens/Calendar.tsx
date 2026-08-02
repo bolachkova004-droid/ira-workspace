@@ -1,81 +1,57 @@
-import {Bell,CalendarDays,CalendarPlus,ChevronLeft,ChevronRight,Clock3,Copy,Link2,MoveRight,Trash2} from 'lucide-react'
+import {Bell,CalendarPlus,ChevronLeft,ChevronRight,Copy,ExternalLink,Link2,MoveRight,Trash2,Wifi} from 'lucide-react'
 import {useMemo,useState} from 'react'
 import {Link} from 'react-router-dom'
 import Modal from '../components/Modal'
-import PageHeader from '../components/PageHeader'
+import Monster from '../components/Monster'
 import type {Lesson,Notification,Student} from '../types'
 
-type Props={
-  lessons:Lesson[]
-  students:Student[]
-  addLesson:(x:Omit<Lesson,'id'>)=>void
-  rescheduleLesson:(id:string,date:string,time:string,notify?:boolean)=>void
-  cancelLesson:(id:string,notify?:boolean)=>void
-  getStudentAccessUrl:(studentId:string)=>string
-  getStudentBotLink:(studentId:string)=>string
-  queueNotification:(x:Omit<Notification,'id'|'createdAt'|'status'>)=>void
-}
-
-type View='month'|'week'|'day'
+type Props={lessons:Lesson[];students:Student[];addLesson:(x:Omit<Lesson,'id'>)=>void;rescheduleLesson:(id:string,date:string,time:string,notify?:boolean)=>void;cancelLesson:(id:string,notify?:boolean)=>void;getStudentAccessUrl:(studentId:string)=>string;getStudentBotLink:(studentId:string)=>string;queueNotification:(x:Omit<Notification,'id'|'createdAt'|'status'>)=>void}
 const iso=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
 const fromIso=(value:string)=>new Date(`${value}T12:00:00`)
-const startOfWeek=(date:Date)=>{const d=new Date(date);const day=(d.getDay()+6)%7;d.setDate(d.getDate()-day);return d}
-const addDays=(date:Date,days:number)=>{const d=new Date(date);d.setDate(d.getDate()+days);return d}
-const titleFor=(date:Date)=>date.toLocaleDateString('ru-RU',{month:'long',year:'numeric'})
+const startOfWeek=(date:Date)=>{const value=new Date(date);value.setDate(value.getDate()-((value.getDay()+6)%7));return value}
+const addDays=(date:Date,days:number)=>{const value=new Date(date);value.setDate(value.getDate()+days);return value}
+const minutes=(value:string)=>{const [h,m]=value.split(':').map(Number);return h*60+m}
+const overlaps=(a:Lesson,b:Lesson)=>a.date===b.date&&a.id!==b.id&&minutes(a.time)<minutes(b.time)+b.duration&&minutes(b.time)<minutes(a.time)+a.duration&&a.status!=='Отменён'&&b.status!=='Отменён'
 
 export default function Calendar({lessons,students,addLesson,rescheduleLesson,cancelLesson,getStudentAccessUrl,getStudentBotLink,queueNotification}:Props){
-  const [view,setView]=useState<View>('month')
   const [cursor,setCursor]=useState(new Date())
   const [selected,setSelected]=useState(iso(new Date()))
   const [open,setOpen]=useState(false)
   const [moving,setMoving]=useState<Lesson|null>(null)
   const [sharing,setSharing]=useState<Student|null>(null)
   const [copied,setCopied]=useState<'portal'|'bot'|null>(null)
+  const [calendarReady,setCalendarReady]=useState(false)
+  const days=useMemo(()=>{const first=new Date(cursor.getFullYear(),cursor.getMonth(),1);const start=startOfWeek(first);return Array.from({length:42},(_,index)=>addDays(start,index))},[cursor])
+  const selectedLessons=lessons.filter(item=>item.date===selected&&item.status!=='Отменён').sort((a,b)=>a.time.localeCompare(b.time))
+  const conflicts=selectedLessons.filter((item,index)=>selectedLessons.some((other,otherIndex)=>index!==otherIndex&&overlaps(item,other)))
+  const monthName=cursor.toLocaleDateString('ru-RU',{month:'long',year:'numeric'})
+  const previous=()=>setCursor(value=>new Date(value.getFullYear(),value.getMonth()-1,1))
+  const next=()=>setCursor(value=>new Date(value.getFullYear(),value.getMonth()+1,1))
+  const selectDay=(day:Date)=>{setSelected(iso(day));setCursor(new Date(day.getFullYear(),day.getMonth(),1))}
 
-  const monthDays=useMemo(()=>{
-    const first=new Date(cursor.getFullYear(),cursor.getMonth(),1)
-    const gridStart=startOfWeek(first)
-    return Array.from({length:42},(_,index)=>addDays(gridStart,index))
-  },[cursor])
-  const weekDays=useMemo(()=>Array.from({length:7},(_,index)=>addDays(startOfWeek(cursor),index)),[cursor])
-  const visibleDays=view==='month'?monthDays:view==='week'?weekDays:[fromIso(selected)]
-  const selectedLessons=lessons.filter(item=>item.date===selected).sort((a,b)=>a.time.localeCompare(b.time))
-  const today=iso(new Date())
+  return <section className="screen rasmus-calendar">
+    <header className="inner-topbar"><strong>Календарь</strong><button className="top-icon plain" onClick={()=>setOpen(true)}><CalendarPlus/></button></header>
 
-  const previous=()=>{const next=new Date(cursor);if(view==='month')next.setMonth(next.getMonth()-1);else next.setDate(next.getDate()-(view==='week'?7:1));setCursor(next);if(view==='day')setSelected(iso(next))}
-  const forward=()=>{const next=new Date(cursor);if(view==='month')next.setMonth(next.getMonth()+1);else next.setDate(next.getDate()+(view==='week'?7:1));setCursor(next);if(view==='day')setSelected(iso(next))}
-  const chooseDay=(date:Date)=>{setSelected(iso(date));if(view==='day')setCursor(date)}
+    <button className={`calendar-sync ${calendarReady?'connected':''}`} onClick={()=>setCalendarReady(value=>!value)}><i/><span><b>{calendarReady?'Google Calendar подключён':'Google Calendar готов к подключению'}</b>{calendarReady?'личные события будут учитывать пересечения':'нажми, чтобы включить демонстрационный режим'}</span><em><Wifi/></em></button>
 
-  return <section className="screen calendar-v5">
-    <PageHeader eyebrow="Paper planner" title="Календарь" subtitle="Расписание учителя и личные календари учеников — в одной системе." action={<button className="primary" onClick={()=>setOpen(true)}><CalendarPlus size={18}/>Новый урок</button>}/>
+    <div className="calendar-month-head"><h1>{monthName}</h1><div><button className="top-icon plain" onClick={previous}><ChevronLeft/></button><button className="top-icon plain" onClick={next}><ChevronRight/></button></div></div>
+    <div className="calendar-weekdays">{['ПН','ВТ','СР','ЧТ','ПТ','СБ','ВС'].map(day=><span key={day}>{day}</span>)}</div>
+    <div className="calendar-concept-grid">{days.map(day=>{const key=iso(day);const dayLessons=lessons.filter(item=>item.date===key&&item.status!=='Отменён');const hasConflict=dayLessons.some(item=>dayLessons.some(other=>overlaps(item,other)));return <button key={key} className={`${day.getMonth()!==cursor.getMonth()?'out ':''}${key===selected?'selected ':''}${key===iso(new Date())?'today ':''}${hasConflict?'conflict':''}`} onClick={()=>selectDay(day)}><span>{day.getDate()}</span><i>{dayLessons.slice(0,3).map(item=><b className={item.paid?'paid':'lesson'} key={item.id}/>)}</i></button>})}</div>
+    <div className="calendar-legend"><span><i className="lesson"/>Уроки</span><span><i className="paid"/>Оплачено</span><span><i className="conflict"/>Пересечение</span></div>
 
-    <div className="calendar-toolbar paper-sheet">
-      <div className="calendar-nav"><button className="icon-btn" onClick={previous}><ChevronLeft/></button><button className="calendar-title" onClick={()=>{const now=new Date();setCursor(now);setSelected(iso(now))}}>{view==='day'?fromIso(selected).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'}):titleFor(cursor)}</button><button className="icon-btn" onClick={forward}><ChevronRight/></button></div>
-      <div className="view-switch">{(['month','week','day'] as const).map(item=><button className={view===item?'active':''} key={item} onClick={()=>setView(item)}>{item==='month'?'Месяц':item==='week'?'Неделя':'День'}</button>)}</div>
-    </div>
+    <section className="selected-day-panel">
+      <header><strong>{fromIso(selected).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}</strong><span>{fromIso(selected).toLocaleDateString('ru-RU',{weekday:'long'})}</span></header>
+      {selectedLessons.map(item=>{const student=students.find(x=>x.id===item.studentId);const conflict=conflicts.some(x=>x.id===item.id);return <article className={conflict?'conflict':''} key={item.id}><time>{item.time}</time><Link to={`/lesson/${item.id}`} className="grow"><strong>{item.student}{conflict&&<span>⚠</span>}</strong><small>{item.topic} · {item.duration} мин</small></Link><span className="level-pill">{student?.level||'Пробный'}</span><div className="calendar-row-actions"><button title="Перенести" onClick={()=>setMoving(item)}><MoveRight/></button>{student&&<button title="Доступ ученика" onClick={()=>setSharing(student)}><Link2/></button>}<button title="Отменить" onClick={()=>confirm('Отменить урок и подготовить уведомление?')&&cancelLesson(item.id,true)}><Trash2/></button></div></article>})}
+      {!selectedLessons.length&&<p className="empty-light">В этот день уроков нет.</p>}
+    </section>
 
-    {view==='month'?<section className="month-paper paper-sheet">
-      <div className="weekday-row">{['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(day=><span key={day}>{day}</span>)}</div>
-      <div className="month-grid">{visibleDays.map(date=>{const dateIso=iso(date);const dayLessons=lessons.filter(item=>item.date===dateIso&&item.status!=='Отменён');const muted=date.getMonth()!==cursor.getMonth();return <button key={dateIso} className={`${selected===dateIso?'selected ':''}${today===dateIso?'today ':''}${muted?'muted-day':''}`} onClick={()=>chooseDay(date)}><span className="day-number">{date.getDate()}</span><div className="day-events">{dayLessons.slice(0,3).map(item=><i className={`event-dot ${item.paid?'paid':'unpaid'}`} key={item.id} title={`${item.time} ${item.student}`}>{item.time}</i>)}{dayLessons.length>3&&<small>+{dayLessons.length-3}</small>}</div></button>})}</div>
-    </section>:view==='week'?<section className="week-paper paper-sheet"><div className="week-grid">{weekDays.map(date=>{const dateIso=iso(date);const dayLessons=lessons.filter(item=>item.date===dateIso&&item.status!=='Отменён').sort((a,b)=>a.time.localeCompare(b.time));return <article className={selected===dateIso?'active':''} key={dateIso} onClick={()=>chooseDay(date)}><header><span>{date.toLocaleDateString('ru-RU',{weekday:'short'})}</span><strong>{date.getDate()}</strong></header><div>{dayLessons.map(item=><Link to={`/lesson/${item.id}`} key={item.id}><time>{item.time}</time><span>{item.student}</span></Link>)}{!dayLessons.length&&<small>Свободно</small>}</div></article>})}</div></section>:<section className="day-paper paper-sheet ruled-paper"><div className="day-timeline">{Array.from({length:13},(_,i)=>i+8).map(hour=>{const items=selectedLessons.filter(item=>Number(item.time.slice(0,2))===hour);return <div className="timeline-hour" key={hour}><time>{String(hour).padStart(2,'0')}:00</time><div>{items.map(item=><Link className="timeline-lesson" to={`/lesson/${item.id}`} key={item.id}><strong>{item.student}</strong><span>{item.topic} · {item.duration} мин</span></Link>)}</div></div>})}</div></section>}
+    {conflicts.length>0&&<section className="conflict-card"><span>⚠️</span><div><p><b>Пересечение:</b> два урока частично накладываются друг на друга.</p><button onClick={()=>setMoving(conflicts[0])}>Перенести один урок</button></div></section>}
+    <section className="rasmus-aside calendar-aside"><Monster small mood={conflicts.length?'alert':'happy'}/><p><b>Расмус:</b> {conflicts.length?'я нашёл пересечение. Лучше перенести один слот до отправки напоминаний.':'расписание чистое. Студенческие ссылки и уведомления доступны в карточках уроков.'}</p></section>
 
-    <div className="calendar-lower">
-      <section className="paper-sheet selected-day-panel">
-        <div className="section-head"><div><span className="kicker">Выбранный день</span><h2>{fromIso(selected).toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'})}</h2></div><span className="paper-counter">{selectedLessons.length}</span></div>
-        <div className="calendar-list">{selectedLessons.map(item=><article className="calendar-event-v5" key={item.id}><Link className="event-open" to={`/lesson/${item.id}`}><div className="event-time"><Clock3 size={17}/><strong>{item.time}</strong><small>{item.duration} мин</small></div><div className="event-main"><strong>{item.student}</strong><span>{item.topic}</span>{item.status==='Перенесён'&&<small>перенесён с {item.previousDate} {item.previousTime}</small>}</div></Link><div className="event-actions"><span className={item.paid?'status ok':'status warn'}>{item.paid?'Оплачено':'Не оплачено'}</span><button className="icon-btn" title="Перенести" onClick={()=>setMoving(item)}><MoveRight size={17}/></button><button className="icon-btn danger" title="Отменить" onClick={()=>confirm('Отменить урок и создать уведомление ученику?')&&cancelLesson(item.id,true)}><Trash2 size={17}/></button></div></article>)}{!selectedLessons.length&&<button className="empty-column" onClick={()=>setOpen(true)}><CalendarPlus/>Запланировать первый урок</button>}</div>
-      </section>
+    {open&&<Modal title="Новый урок" onClose={()=>setOpen(false)}><form className="form" onSubmit={event=>{event.preventDefault();const form=new FormData(event.currentTarget);const studentId=String(form.get('studentId'));const student=students.find(x=>x.id===studentId);const date=String(form.get('date'));const time=String(form.get('time'));const lesson:Omit<Lesson,'id'>={studentId:studentId||undefined,student:student?.name||'Пробное занятие',date,time,duration:Number(form.get('duration')),topic:String(form.get('topic')),status:'Запланирован',paid:false,homework:'',plan:'',notes:'',errors:'',mood:'Спокойное',meetingLink:String(form.get('meetingLink')),reminder24h:true,reminder2h:true};addLesson(lesson);if(student&&form.get('notify')==='on')queueNotification({studentId:student.id,kind:'lesson_24h',sendAt:new Date(`${date}T${time}:00`).toISOString(),deliveryMode:'Авто',title:'Новый урок',message:`${student.name.split(' ')[0]}, новый урок запланирован на ${fromIso(date).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})} в ${time}.`});setOpen(false)}}><label>Ученик<select name="studentId"><option value="">Пробное занятие</option>{students.filter(x=>x.status==='Активный').map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select></label><div className="form-row"><label>Дата<input name="date" type="date" defaultValue={selected} required/></label><label>Время<input name="time" type="time" defaultValue="10:00" required/></label></div><div className="form-row"><label>Длительность<input name="duration" type="number" defaultValue="60"/></label><label>Тема<input name="topic" required/></label></div><label>Ссылка на урок<input name="meetingLink" placeholder="https://meet.google.com/..."/></label><label className="checkbox"><input name="notify" type="checkbox" defaultChecked/><span><Bell/>Подготовить уведомление ученику</span></label><button className="primary wide">Запланировать</button></form></Modal>}
 
-      <aside className="paper-sheet student-access-panel">
-        <div className="section-head"><div><span className="kicker">Для учеников</span><h2>Личный календарь</h2></div><Link2/></div>
-        <p className="muted">Каждый ученик получает только своё расписание, домашнее и оплаты.</p>
-        <div className="access-list">{students.filter(x=>x.status==='Активный').map(student=><button key={student.id} onClick={()=>{setSharing(student);setCopied(null)}}><span className="avatar small">{student.name[0]}</span><span className="grow"><strong>{student.name}</strong><small>{student.telegram||'Telegram не указан'}</small></span><Copy size={16}/></button>)}</div>
-      </aside>
-    </div>
+    {moving&&<Modal title="Перенести урок" onClose={()=>setMoving(null)}><form className="form" onSubmit={event=>{event.preventDefault();const form=new FormData(event.currentTarget);rescheduleLesson(moving.id,String(form.get('date')),String(form.get('time')),form.get('notify')==='on');setMoving(null)}}><p className="muted">{moving.student}: сейчас {fromIso(moving.date).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})} в {moving.time}</p><div className="form-row"><label>Новая дата<input name="date" type="date" defaultValue={moving.date} required/></label><label>Новое время<input name="time" type="time" defaultValue={moving.time} required/></label></div><label className="checkbox"><input name="notify" type="checkbox" defaultChecked/><span><Bell/>Сообщить ученику в Telegram</span></label><button className="primary wide">Перенести урок</button></form></Modal>}
 
-    {open&&<Modal title="Новый урок" onClose={()=>setOpen(false)}><form className="form" onSubmit={event=>{event.preventDefault();const form=new FormData(event.currentTarget);const studentId=String(form.get('studentId'));const student=students.find(item=>item.id===studentId);const date=String(form.get('date'));const time=String(form.get('time'));const reminder=String(form.get('notify'))==='on';addLesson({studentId:studentId||undefined,student:student?.name||'Пробное занятие',date,time,duration:Number(form.get('duration')),topic:String(form.get('topic')),status:'Запланирован',paid:false,homework:'',plan:'',notes:'',errors:'',mood:'Спокойное',meetingLink:String(form.get('meetingLink')),reminder24h:reminder,reminder2h:reminder});if(reminder&&studentId){const starts=new Date(`${date}T${time}:00`).getTime();const now=Date.now();queueNotification({studentId,kind:'custom',sendAt:new Date().toISOString(),title:'Новый урок',message:`${student?.name.split(' ')[0]}, новый урок запланирован на ${fromIso(date).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})} в ${time}.`});if(starts-now>24*3600000)queueNotification({studentId,kind:'lesson_24h',sendAt:new Date(starts-24*3600000).toISOString(),title:'Урок завтра',message:`${student?.name.split(' ')[0]}, завтра в ${time} у нас английский ✨`});if(starts-now>2*3600000)queueNotification({studentId,kind:'lesson_2h',sendAt:new Date(starts-2*3600000).toISOString(),title:'Урок через 2 часа',message:`${student?.name.split(' ')[0]}, урок начнётся через 2 часа. Ссылка доступна в личном кабинете.`})}setOpen(false)}}><label>Ученик<select name="studentId"><option value="">Пробное занятие</option>{students.filter(x=>x.status==='Активный').map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</select></label><div className="form-row"><label>Дата<input name="date" type="date" defaultValue={selected} required/></label><label>Время<input name="time" type="time" defaultValue="10:00" required/></label></div><div className="form-row"><label>Длительность<input name="duration" type="number" defaultValue="60"/></label><label>Тема<input name="topic" required/></label></div><label>Ссылка на урок<input name="meetingLink" placeholder="https://meet.google.com/..."/></label><label className="checkbox"><input name="notify" type="checkbox" defaultChecked/><span><Bell size={18}/>Создать уведомление ученику</span></label><button className="primary wide">Запланировать</button></form></Modal>}
-
-    {moving&&<Modal title="Перенести урок" onClose={()=>setMoving(null)}><form className="form" onSubmit={event=>{event.preventDefault();const form=new FormData(event.currentTarget);rescheduleLesson(moving.id,String(form.get('date')),String(form.get('time')),form.get('notify')==='on');setMoving(null)}}><p className="muted">{moving.student}: сейчас {fromIso(moving.date).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})} в {moving.time}</p><div className="form-row"><label>Новая дата<input name="date" type="date" defaultValue={moving.date} required/></label><label>Новое время<input name="time" type="time" defaultValue={moving.time} required/></label></div><label className="checkbox"><input name="notify" type="checkbox" defaultChecked/><span><Bell size={18}/>Сообщить ученику в Telegram</span></label><button className="primary wide">Перенести урок</button></form></Modal>}
-
-    {sharing&&<Modal title="Доступ ученика" onClose={()=>setSharing(null)}><div className="share-card"><div className="avatar large">{sharing.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</div><h2>{sharing.name}</h2><p>Отправь эту персональную ссылку ученику. В ней нет данных других учеников.</p><label className="share-label">Привязать Telegram и включить оповещения</label><div className="copy-field"><input readOnly value={getStudentBotLink(sharing.id)}/><button className="primary" onClick={async()=>{await navigator.clipboard.writeText(getStudentBotLink(sharing.id));setCopied('bot')}}><Copy size={17}/>{copied==='bot'?'Скопировано':'Ссылка бота'}</button></div><label className="share-label">Открыть только личный кабинет</label><div className="copy-field"><input readOnly value={getStudentAccessUrl(sharing.id)}/><button className="secondary" onClick={async()=>{await navigator.clipboard.writeText(getStudentAccessUrl(sharing.id));setCopied('portal')}}><Copy size={17}/>{copied==='portal'?'Скопировано':'Кабинет'}</button></div><small>Лучше отправлять первую ссылку: бот сохранит Telegram ID ученика и сможет присылать напоминания.</small></div></Modal>}
+    {sharing&&<Modal title="Доступ ученика" onClose={()=>setSharing(null)}><div className="share-card"><div className="student-avatar">{sharing.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</div><h2>{sharing.name}</h2><p>Первая ссылка привязывает Telegram и включает уведомления. Вторая открывает только личный кабинет.</p><label>Telegram-бот</label><div className="copy-field"><input readOnly value={getStudentBotLink(sharing.id)}/><button className="primary" onClick={async()=>{await navigator.clipboard.writeText(getStudentBotLink(sharing.id));setCopied('bot')}}><Copy/>{copied==='bot'?'Готово':'Копировать'}</button></div><label>Личный кабинет</label><div className="copy-field"><input readOnly value={getStudentAccessUrl(sharing.id)}/><button className="secondary" onClick={async()=>{await navigator.clipboard.writeText(getStudentAccessUrl(sharing.id));setCopied('portal')}}><Copy/>{copied==='portal'?'Готово':'Копировать'}</button></div><a className="text-link" href={getStudentAccessUrl(sharing.id)} target="_blank" rel="noreferrer"><ExternalLink/>Открыть кабинет</a></div></Modal>}
   </section>
 }
