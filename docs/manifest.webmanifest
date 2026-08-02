@@ -1,10 +1,1 @@
-{
-  "name":"Ira Workspace — Расмус",
-  "short_name":"Ira Workspace",
-  "description":"CRM преподавателя: ученики, календарь, оплаты и Telegram-напоминания",
-  "start_url":"./",
-  "display":"standalone",
-  "background_color":"#17151C",
-  "theme_color":"#17151C",
-  "icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
-}
+{"name":"Ira Workspace — Расмус","short_name":"Ira Workspace","start_url":"./?v=602","display":"standalone","background_color":"#17151c","theme_color":"#17151c","icons":[{"src":"./icon.svg","sizes":"any","type":"image/svg+xml"}]}
