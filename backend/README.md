@@ -1,10 +1,10 @@
-# Серверный этап
+# Ira Workspace backend
 
-Для реальных уведомлений понадобятся:
-- защищённая база данных;
-- Telegram Bot Token в серверных секретах;
-- планировщик задач;
-- проверка Telegram initData;
-- таблицы teachers, students, lessons, payments, homeworks, notifications.
+Supabase backend for Ira Workspace 7.3.
 
-Эти секреты нельзя помещать в публичный GitHub Pages.
+- `supabase/migrations` — database schema and secure Cron installer;
+- `supabase/functions/workspace-api` — authenticated teacher sync, portal and review queue;
+- `supabase/functions/telegram-webhook` — student linking and bot commands;
+- `supabase/functions/process-notifications` — scheduled reminder generator and sender.
+
+Teacher actions validate Telegram Mini App `initData` on the server. Public student access uses an unguessable UUID portal token. Database tables have RLS enabled and no public policies.
