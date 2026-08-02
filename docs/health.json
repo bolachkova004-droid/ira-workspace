@@ -1,1 +1,6 @@
-{"app":"Ira Workspace","version":"6.0.2","status":"ok","theme":"rasmus-dark","build":"standalone-no-cdn"}
+{
+  "app": "Ira Workspace",
+  "version": "6.0.3",
+  "status": "ok",
+  "build": "github-pages-root-fix"
+}
