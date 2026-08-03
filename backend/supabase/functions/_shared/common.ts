@@ -55,7 +55,9 @@ export async function verifyTelegramInitData(initData: string, maxAgeSeconds = 8
   const params = new URLSearchParams(initData);
   const receivedHash = params.get("hash") ?? "";
   params.delete("hash");
-  params.delete("signature");
+  // Keep the new Telegram `signature` field in the HMAC data-check-string.
+  // Telegram's bot-token validation excludes only `hash`; `signature` is
+  // excluded only for the separate third-party Ed25519 validation flow.
   const dataCheckString = [...params.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${value}`)
