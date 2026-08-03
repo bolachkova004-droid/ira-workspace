@@ -60,7 +60,7 @@ async function generateForWorkspace(teacher: any, state: any) {
   const homeworkMode = modeFor(state, "homework", "auto");
 
   for (const lesson of state?.lessons ?? []) {
-    if (lesson.status === "cancelled") continue;
+    if (lesson.status === "cancelled" || lesson.status === "completed") continue;
     const student = studentFromState(state, String(lesson.studentId));
     if (!student?.id || !lesson.date || !lesson.time) continue;
     const startsAt = localDateTimeToUtc(String(lesson.date), String(lesson.time), timezone);
