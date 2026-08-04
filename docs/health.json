@@ -1,6 +1,6 @@
 {
   "app": "Ira Workspace",
-  "version": "7.4.1",
+  "version": "7.4.2",
   "status": "ok",
-  "build": "reliable-save-race-fix"
+  "build": "fast-local-save-background-cloud"
 }

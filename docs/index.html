@@ -94,7 +94,7 @@
 <script>
 (function(){
   'use strict';
-  const APP_VERSION='7.4.1';
+  const APP_VERSION='7.4.2';
   const STORAGE_KEY='ira_workspace_clean_v7';
   const CLOUD_KEY='ira_workspace_cloud_v73';
   const $=(s,r=document)=>r.querySelector(s); const $$=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -154,7 +154,12 @@
   function queueCloudPush(delay=500){if(suppressCloudPush||!cloudReady())return;clearTimeout(cloudTimer);cloudTimer=setTimeout(()=>pushCloud(false,false).catch(()=>{}),delay)}
   async function pushCloudLatest(force=false,showToast=false){clearTimeout(cloudTimer);if(cloudPushPromise){try{await cloudPushPromise}catch{}}return pushCloud(force,showToast)}
   async function verifyCloudSnapshot(){const data=await cloudRequest('pull');const localIds=state.students.map(x=>String(x.id)).sort().join('|');const remoteIds=(data.state?.students||[]).map(x=>String(x.id)).sort().join('|');const localLessons=state.lessons.map(x=>String(x.id)).sort().join('|');const remoteLessons=(data.state?.lessons||[]).map(x=>String(x.id)).sort().join('|');if(localIds!==remoteIds||localLessons!==remoteLessons)throw new Error('облачная копия ещё не совпадает с данными на устройстве');applyCloudMeta(data);cloud.pendingLocalChanges=false;persistCloud();return data}
-  async function syncImportant(message){if(!cloudReady()){toast(message+' · сохранено на устройстве');return}try{await pushCloudLatest(true,false);await verifyCloudSnapshot();toast(message+' · подтверждено облаком')}catch(error){cloud.pendingLocalChanges=true;persistCloud();alert('На устройстве сохранено. Облако пока не подтвердило: '+error.message)}}
+  function syncImportant(message){
+    toast(message);
+    if(!cloudReady())return Promise.resolve();
+    void pushCloudLatest(true,false).then(()=>{cloud.pendingLocalChanges=false;persistCloud()}).catch(error=>{cloud.pendingLocalChanges=true;cloud.error=error.message;persistCloud();toast(message+' · облако синхронизируется позже')});
+    return Promise.resolve();
+  }
   async function configureBot(showToast=true){if(!cloudReady())throw new Error('Сначала подключи облако');const data=await cloudRequest('configure-bot');if(showToast)toast(`Бот @${data.bot?.username||cloud.botUsername} настроен`);return data}
   async function sendCloudTest(){if(!cloudReady())return;try{await cloudRequest('send-test');toast('Тестовое сообщение отправлено тебе в Telegram')}catch(error){alert(error.message)}}
   async function cloudNotificationAction(id,operation,text){try{await cloudRequest('notification-action',{id,operation,text});await pullCloud(false);toast(operation==='approve'?'Сообщение отправлено':operation==='dismiss'?'Напоминание удалено':'Текст сохранён')}catch(error){alert(error.message)}}
