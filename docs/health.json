@@ -1,6 +1,6 @@
 {
   "app": "Ira Workspace",
-  "version": "7.4.3",
+  "version": "7.5.0",
   "status": "ok",
-  "build": "synced-404-instant-save"
+  "build": "direct-save-payment-modes"
 }
