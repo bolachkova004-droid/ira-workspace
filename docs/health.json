@@ -1,6 +1,6 @@
 {
   "app": "Ira Workspace",
-  "version": "7.5.0",
+  "version": "7.5.1",
   "status": "ok",
-  "build": "direct-save-payment-modes"
+  "build": "immutable-save-readonly-fix"
 }
