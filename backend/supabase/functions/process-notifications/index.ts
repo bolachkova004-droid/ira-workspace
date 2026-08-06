@@ -9,7 +9,19 @@ import {
 
 const db = adminClient();
 
-function modeFor(state: any, key: string, fallback: "auto" | "review" | "off") {
+type ReminderMode = "auto" | "review" | "off";
+
+function html(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]!));
+}
+
+function modeFor(state: any, key: string, fallback: ReminderMode): ReminderMode {
   const mode = state?.reminderSettings?.[key];
   return mode === "auto" || mode === "review" || mode === "off" ? mode : fallback;
 }
@@ -23,14 +35,34 @@ function isoWeek(date = new Date()) {
   return `${d.getUTCFullYear()}-${String(week).padStart(2, "0")}`;
 }
 
+function dateInZone(date: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function ruDate(date: string) {
+  return new Date(`${date}T12:00:00`).toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+  });
+}
+
+function teacherFirstName(teacher: any) {
+  return String(teacher?.name || "Ира").trim().split(/\s+/)[0] || "Ира";
+}
+
 async function createEvent(input: {
   teacherId: string;
-  studentId: string;
+  studentId?: string;
   kind: string;
   dedupeKey: string;
   text: string;
   sendAt: Date;
-  mode: "auto" | "review" | "off";
+  mode: ReminderMode;
   source?: Record<string, unknown>;
 }) {
   if (input.mode === "off") return false;
@@ -39,7 +71,7 @@ async function createEvent(input: {
   const status = input.mode === "auto" ? "queued" : "review";
   const { error } = await db.from("notification_events").upsert({
     teacher_id: input.teacherId,
-    student_id: input.studentId,
+    student_id: input.studentId ?? null,
     kind: input.kind,
     dedupe_key: input.dedupeKey,
     text: input.text,
@@ -52,10 +84,40 @@ async function createEvent(input: {
   return true;
 }
 
+function dayLessons(state: any, date: string) {
+  return (Array.isArray(state?.lessons) ? state.lessons : [])
+    .filter((lesson: any) => lesson.date === date && lesson.status !== "cancelled")
+    .sort((a: any, b: any) => String(a.time).localeCompare(String(b.time)));
+}
+
+function teacherDailyText(teacher: any, state: any, date: string) {
+  const lessons = dayLessons(state, date);
+  const rows = lessons.map((lesson: any) => {
+    const student = studentFromState(state, String(lesson.studentId));
+    return `• ${html(lesson.time)} — ${html(student?.name || "Ученик")}${lesson.title ? ` · ${html(lesson.title)}` : ""}`;
+  });
+  const students = Array.isArray(state?.students) ? state.students : [];
+  const lowPackages = students.filter((student: any) => {
+    if (student.paymentMode === "single") return false;
+    const left = Math.max(0, Number(student.packageTotal ?? 0) - Number(student.packageUsed ?? 0));
+    return left <= 2;
+  });
+  const debts = students.filter((student: any) => Number(student.balance ?? 0) > 0);
+  const name = teacherFirstName(teacher);
+  const schedule = rows.length ? `${rows.join("\n")}` : "Сегодня уроков нет.";
+  const notes = [
+    lowPackages.length ? `📦 Заканчиваются абонементы: ${lowPackages.length}` : "",
+    debts.length ? `💳 Есть задолженность: ${debts.length}` : "",
+  ].filter(Boolean).join("\n");
+  return `☀️ Доброе утро, ${html(name)}!\n\n<b>План на ${html(ruDate(date))}</b>\n${schedule}${notes ? `\n\n${notes}` : ""}`;
+}
+
 async function generateForWorkspace(teacher: any, state: any) {
   let created = 0;
   const timezone = teacher.timezone || "Europe/Moscow";
-  const lessonMode = modeFor(state, "lesson", "auto");
+  const studentLessonMode = modeFor(state, "lesson", "auto");
+  const teacherLessonMode = modeFor(state, "teacherLesson", "auto");
+  const teacherDailyMode = modeFor(state, "teacherDaily", "auto");
   const paymentMode = modeFor(state, "payment", "review");
   const homeworkMode = modeFor(state, "homework", "auto");
 
@@ -64,10 +126,10 @@ async function generateForWorkspace(teacher: any, state: any) {
     const student = studentFromState(state, String(lesson.studentId));
     if (!student?.id || !lesson.date || !lesson.time) continue;
     const startsAt = localDateTimeToUtc(String(lesson.date), String(lesson.time), timezone);
-    const label = `${new Date(`${lesson.date}T12:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })} в ${lesson.time}`;
+    const label = `${ruDate(String(lesson.date))} в ${lesson.time}`;
     const reminders = [
-      { suffix: "24h", offset: 24 * 60 * 60_000, text: `${student.name}, напоминаю: завтра ${label} у нас урок английского.` },
-      { suffix: "1h", offset: 60 * 60_000, text: `${student.name}, урок начнётся через час — в ${lesson.time}. До встречи!` },
+      { suffix: "24h", offset: 24 * 60 * 60_000, text: `${html(student.name)}, напоминаю: завтра в ${html(lesson.time)} у нас урок английского.` },
+      { suffix: "2h", offset: 2 * 60 * 60_000, text: `${html(student.name)}, урок начнётся через 2 часа — в ${html(lesson.time)}. До встречи!` },
     ];
     for (const reminder of reminders) {
       const wasCreated = await createEvent({
@@ -77,21 +139,49 @@ async function generateForWorkspace(teacher: any, state: any) {
         dedupeKey: `lesson-reminder:${lesson.id}:${reminder.suffix}:${lesson.date}:${lesson.time}`,
         text: reminder.text,
         sendAt: new Date(startsAt.getTime() - reminder.offset),
-        mode: lessonMode,
-        source: { lessonId: lesson.id, offset: reminder.suffix },
+        mode: studentLessonMode,
+        source: { lessonId: lesson.id, offset: reminder.suffix, recipient: "student" },
       });
       if (wasCreated) created++;
     }
+
+    const teacherCreated = await createEvent({
+      teacherId: teacher.id,
+      kind: "teacher_lesson_reminder",
+      dedupeKey: `teacher-lesson:${lesson.id}:30m:${lesson.date}:${lesson.time}`,
+      text: `⏰ Через 30 минут урок\n<b>${html(student.name)}</b> · ${html(label)}${lesson.title ? `\n${html(lesson.title)}` : ""}`,
+      sendAt: new Date(startsAt.getTime() - 30 * 60_000),
+      mode: teacherLessonMode,
+      source: { lessonId: lesson.id, offset: "30m", recipient: "teacher" },
+    });
+    if (teacherCreated) created++;
+  }
+
+  const currentLocalDate = dateInZone(new Date(), timezone);
+  const dailySendAt = localDateTimeToUtc(currentLocalDate, "08:00", timezone);
+  const nowMs = Date.now();
+  // Create the daily card close to delivery time so it contains the latest schedule.
+  if (dailySendAt.getTime() >= nowMs - 30 * 60_000 && dailySendAt.getTime() <= nowMs + 10 * 60_000) {
+    const dailyCreated = await createEvent({
+      teacherId: teacher.id,
+      kind: "teacher_daily",
+      dedupeKey: `teacher-daily:${currentLocalDate}`,
+      text: teacherDailyText(teacher, state, currentLocalDate),
+      sendAt: dailySendAt,
+      mode: teacherDailyMode,
+      source: { date: currentLocalDate, recipient: "teacher" },
+    });
+    if (dailyCreated) created++;
   }
 
   const week = isoWeek();
   for (const student of state?.students ?? []) {
     const balance = Number(student.balance ?? 0);
     const left = Math.max(0, Number(student.packageTotal ?? 0) - Number(student.packageUsed ?? 0));
-    if (balance > 0 || left <= 1) {
+    if (balance > 0 || (student.paymentMode !== "single" && left <= 1)) {
       const paymentText = balance > 0
-        ? `${student.name}, напоминаю про оплату ${balance.toLocaleString("ru-RU")} ₽. Если уже оплатили — просто не обращай внимания 🙂`
-        : `${student.name}, в пакете осталось ${left} занятие. Можно оплатить следующий пакет, чтобы сохранить время в расписании 🙂`;
+        ? `${html(student.name)}, напоминаю про оплату ${balance.toLocaleString("ru-RU")} ₽. Если уже оплатили — просто не обращай внимания 🙂`
+        : `${html(student.name)}, в пакете осталось ${left} занятие. Можно оплатить следующий пакет, чтобы сохранить время в расписании 🙂`;
       const wasCreated = await createEvent({
         teacherId: teacher.id,
         studentId: String(student.id),
@@ -100,7 +190,7 @@ async function generateForWorkspace(teacher: any, state: any) {
         text: paymentText,
         sendAt: new Date(),
         mode: paymentMode,
-        source: { balance, lessonsLeft: left },
+        source: { balance, lessonsLeft: left, recipient: "student" },
       });
       if (wasCreated) created++;
     }
@@ -114,10 +204,10 @@ async function generateForWorkspace(teacher: any, state: any) {
         studentId: String(student.id),
         kind: "homework",
         dedupeKey: `homework:${student.id}:${homework.id}:${homework.due}`,
-        text: `${student.name}, напоминаю про домашнее задание: «${homework.title}». Срок — ${new Date(`${homework.due}T12:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}.`,
+        text: `${html(student.name)}, напоминаю про домашнее задание: «${html(homework.title)}». Срок — ${html(ruDate(String(homework.due)))}.`,
         sendAt,
         mode: homeworkMode,
-        source: { homeworkId: homework.id },
+        source: { homeworkId: homework.id, recipient: "student" },
       });
       if (wasCreated) created++;
     }
@@ -125,10 +215,26 @@ async function generateForWorkspace(teacher: any, state: any) {
   return created;
 }
 
+async function destinationFor(event: any) {
+  if (event.student_id) {
+    const { data: link } = await db
+      .from("student_links")
+      .select("telegram_chat_id")
+      .eq("teacher_id", event.teacher_id)
+      .eq("student_id", event.student_id)
+      .maybeSingle();
+    if (!link?.telegram_chat_id) return { chatId: null, reason: "Student has not linked Telegram" };
+    return { chatId: link.telegram_chat_id, reason: null };
+  }
+  const { data: teacher } = await db.from("teachers").select("telegram_id").eq("id", event.teacher_id).maybeSingle();
+  if (!teacher?.telegram_id) return { chatId: null, reason: "Teacher Telegram is unavailable" };
+  return { chatId: teacher.telegram_id, reason: null };
+}
+
 async function sendDue() {
   const { data: events, error } = await db
     .from("notification_events")
-    .select("id,teacher_id,student_id,text,status,send_at")
+    .select("id,teacher_id,student_id,kind,text,status,send_at")
     .in("status", ["queued", "blocked"])
     .lte("send_at", new Date().toISOString())
     .order("send_at", { ascending: true })
@@ -139,19 +245,19 @@ async function sendDue() {
   let blocked = 0;
   let failed = 0;
   for (const event of events ?? []) {
-    const { data: link } = await db
-      .from("student_links")
-      .select("telegram_chat_id")
-      .eq("teacher_id", event.teacher_id)
-      .eq("student_id", event.student_id)
-      .maybeSingle();
-    if (!link?.telegram_chat_id) {
-      await db.from("notification_events").update({ status: "blocked", error: "Student has not linked Telegram", updated_at: new Date().toISOString() }).eq("id", event.id);
+    const ageMs = Date.now() - new Date(event.send_at).getTime();
+    if (["lesson_reminder", "teacher_lesson_reminder", "teacher_daily", "homework"].includes(event.kind) && ageMs > 6 * 60 * 60_000) {
+      await db.from("notification_events").update({ status: "dismissed", error: "Reminder expired", updated_at: new Date().toISOString() }).eq("id", event.id);
+      continue;
+    }
+    const destination = await destinationFor(event);
+    if (!destination.chatId) {
+      await db.from("notification_events").update({ status: "blocked", error: destination.reason, updated_at: new Date().toISOString() }).eq("id", event.id);
       blocked++;
       continue;
     }
     try {
-      const message = await sendTelegramMessage(link.telegram_chat_id, event.text, { parse_mode: undefined });
+      const message = await sendTelegramMessage(destination.chatId, event.text);
       await db.from("notification_events").update({
         status: "sent",
         sent_at: new Date().toISOString(),
@@ -174,7 +280,7 @@ Deno.serve(async (req) => {
   if (expected && req.headers.get("x-cron-secret") !== expected) return json({ ok: false, error: "forbidden" }, 403);
 
   try {
-    const { data: rows, error } = await db.from("workspace_states").select("teacher_id,state,teachers(id,timezone)");
+    const { data: rows, error } = await db.from("workspace_states").select("teacher_id,state,teachers(id,name,timezone)");
     if (error) throw error;
     let created = 0;
     for (const row of rows ?? []) {

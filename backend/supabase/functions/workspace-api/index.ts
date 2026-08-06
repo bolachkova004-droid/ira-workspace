@@ -174,19 +174,27 @@ async function deliverNotification(teacherId: string, id: string) {
   if (error) throw error;
   if (!event) throw new Error("Notification not found");
 
-  const { data: link } = await db
-    .from("student_links")
-    .select("telegram_chat_id")
-    .eq("teacher_id", teacherId)
-    .eq("student_id", event.student_id)
-    .maybeSingle();
-  if (!link?.telegram_chat_id) {
-    await db.from("notification_events").update({ status: "blocked", error: "Student has not linked Telegram", updated_at: new Date().toISOString() }).eq("id", id);
-    throw new Error("Ученик ещё не подключил Telegram");
+  let chatId: number | null = null;
+  if (event.student_id) {
+    const { data: link } = await db
+      .from("student_links")
+      .select("telegram_chat_id")
+      .eq("teacher_id", teacherId)
+      .eq("student_id", event.student_id)
+      .maybeSingle();
+    chatId = link?.telegram_chat_id ?? null;
+    if (!chatId) {
+      await db.from("notification_events").update({ status: "blocked", error: "Student has not linked Telegram", updated_at: new Date().toISOString() }).eq("id", id);
+      throw new Error("Ученик ещё не подключил Telegram");
+    }
+  } else {
+    const { data: teacher } = await db.from("teachers").select("telegram_id").eq("id", teacherId).maybeSingle();
+    chatId = teacher?.telegram_id ?? null;
+    if (!chatId) throw new Error("Telegram преподавателя не найден");
   }
 
   try {
-    const message = await sendTelegramMessage(link.telegram_chat_id, event.text, { parse_mode: undefined });
+    const message = await sendTelegramMessage(chatId, event.text);
     await db.from("notification_events").update({
       status: "sent",
       sent_at: new Date().toISOString(),
@@ -360,6 +368,26 @@ Deno.serve(async (req) => {
         return json({ ok: true, sent: true, messageId: message.message_id });
       }
       return json({ ok: false, error: "Неизвестное действие" }, 400);
+    }
+
+
+    if (action === "send-student-test") {
+      const studentId = String(body.studentId ?? "");
+      const { data: link, error } = await db
+        .from("student_links")
+        .select("student_name,telegram_chat_id")
+        .eq("teacher_id", teacher.id)
+        .eq("student_id", studentId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!link) return json({ ok: false, error: "Ученик не найден в облаке" }, 404);
+      if (!link.telegram_chat_id) return json({ ok: false, error: "Ученик ещё не подключил Telegram по персональной ссылке" }, 409);
+      const message = await sendTelegramMessage(
+        link.telegram_chat_id,
+        `🐾 <b>Тест напоминания Ira Workspace</b>
+${telegramHtml(link.student_name)}, всё работает — Расмус сможет напоминать об уроках, домашнем задании и оплате.`,
+      );
+      return json({ ok: true, messageId: message.message_id });
     }
 
     if (action === "configure-bot") {

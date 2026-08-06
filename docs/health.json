@@ -1,6 +1,6 @@
 {
   "app": "Ira Workspace",
-  "version": "7.5.1",
+  "version": "7.6.0",
   "status": "ok",
-  "build": "immutable-save-readonly-fix"
+  "build": "auto-sync-teacher-student-reminders"
 }
