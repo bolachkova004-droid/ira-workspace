@@ -15,9 +15,9 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       OWNER_SETUP_CODE: ${{ secrets.OWNER_SETUP_CODE }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID SUPABASE_DB_PASSWORD TELEGRAM_BOT_TOKEN OWNER_SETUP_CODE; do
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID TELEGRAM_BOT_TOKEN OWNER_SETUP_CODE; do
             if [ -z "${!name:-}" ]; then
               echo "Missing GitHub secret: $name" >&2
               exit 1
@@ -34,13 +34,13 @@ jobs:
           done
 
       - name: Install Supabase CLI
-        run: npm install --no-save supabase@latest
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
-      - name: Link Supabase project
-        run: npx supabase link --project-ref "$SUPABASE_PROJECT_ID"
-
-      - name: Apply database migration
-        run: npx supabase db push
+      # Ira Workspace 7.6.0 does not add a new database migration.
+      # We intentionally deploy by project-ref without `supabase link`,
+      # because the current CLI/API-key response is failing during link.
 
       - name: Create server-only secrets
         shell: bash
@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           WEBHOOK_SECRET="$(openssl rand -hex 32)"
           CRON_SECRET="$(openssl rand -hex 32)"
-          npx supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" \
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" \
             TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
             OWNER_SETUP_CODE="$OWNER_SETUP_CODE" \
             TELEGRAM_WEBHOOK_SECRET="$WEBHOOK_SECRET" \
@@ -57,18 +57,18 @@ jobs:
             APP_PUBLIC_URL="https://bolachkova004-droid.github.io/ira-workspace/"
 
       - name: Deploy workspace API
-        run: npx supabase functions deploy workspace-api --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
+        run: supabase functions deploy workspace-api --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
 
       - name: Deploy Telegram webhook
-        run: npx supabase functions deploy telegram-webhook --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
+        run: supabase functions deploy telegram-webhook --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
 
       - name: Deploy reminder worker
-        run: npx supabase functions deploy process-notifications --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
+        run: supabase functions deploy process-notifications --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
 
       - name: Finish
         shell: bash
         run: |
           echo "### Backend deployed" >> "$GITHUB_STEP_SUMMARY"
-          echo "Open Ira Workspace in Telegram → Settings." >> "$GITHUB_STEP_SUMMARY"
+          echo "Ira Workspace 7.6 functions deployed without Supabase link." >> "$GITHUB_STEP_SUMMARY"
           echo "Endpoint: https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/workspace-api" >> "$GITHUB_STEP_SUMMARY"
-          echo "Use the OWNER_SETUP_CODE you saved in GitHub Secrets." >> "$GITHUB_STEP_SUMMARY"
+          echo "Open Ira Workspace → Settings → Настроить бота, then run the test message." >> "$GITHUB_STEP_SUMMARY"
