@@ -28,17 +28,51 @@ async function parseBody(req: Request) {
   }
 }
 
-async function authenticatedTeacher(req: Request): Promise<{ teacher: Teacher; user: any } | Response> {
+async function authenticatedTeacher(req: Request): Promise<{ teacher: Teacher; user: any; created: boolean } | Response> {
   const checked = await verifyTelegramInitData(req.headers.get("x-telegram-init-data") ?? "");
   if (!checked.ok) return json({ ok: false, error: "Telegram authentication failed", reason: checked.reason }, 401);
-  const { data: teacher, error } = await db
+  const { data: existing, error } = await db
     .from("teachers")
     .select("id,telegram_id,name,timezone")
     .eq("telegram_id", checked.user.id)
     .maybeSingle();
   if (error) return json({ ok: false, error: error.message }, 500);
-  if (!teacher) return json({ ok: false, error: "Owner is not connected", code: "OWNER_NOT_CLAIMED" }, 403);
-  return { teacher: teacher as Teacher, user: checked.user };
+  if (existing) return { teacher: existing as Teacher, user: checked.user, created: false };
+
+  const fullName = [checked.user.first_name, checked.user.last_name].filter(Boolean).join(" ") || "Преподаватель";
+  const inserted = await db
+    .from("teachers")
+    .insert({ telegram_id: checked.user.id, name: fullName })
+    .select("id,telegram_id,name,timezone")
+    .single();
+  if (inserted.error) return json({ ok: false, error: inserted.error.message }, 500);
+  const teacher = inserted.data as Teacher;
+  const workspace = await db.from("workspace_states").insert({
+    teacher_id: teacher.id,
+    state: {
+      version: "8.0.0",
+      profile: { name: fullName, currency: "RUB", onboardingComplete: false },
+      students: [],
+      lessons: [],
+      content: [],
+      reminders: [],
+      reminderSettings: { payment: "review", homework: "auto", lesson: "auto", teacherLesson: "auto", teacherDaily: "auto", teacherReport: "auto", lead: "review" },
+    },
+    revision: 0,
+  });
+  if (workspace.error) return json({ ok: false, error: workspace.error.message }, 500);
+  return { teacher, user: checked.user, created: true };
+}
+
+async function ownerTeacher() {
+  const { data, error } = await db.from("teachers").select("id,telegram_id,name,timezone").order("created_at", { ascending: true }).limit(1).maybeSingle();
+  if (error) throw error;
+  return data as Teacher | null;
+}
+
+async function isOwnerTeacher(teacherId: string) {
+  const owner = await ownerTeacher();
+  return Boolean(owner && owner.id === teacherId);
 }
 
 function modeFor(state: any, key: string, fallback: "auto" | "review" | "off" = "review") {
@@ -223,6 +257,7 @@ async function portalPayload(token: string) {
   if (!student) return null;
   return {
     student,
+    currency: String(state?.profile?.currency ?? "RUB"),
     lessons: upcomingLessons(state, String(link.student_id)).slice(0, 12).map((l: any) => ({
       id: l.id,
       date: l.date,
@@ -294,13 +329,26 @@ Deno.serve(async (req) => {
 
     const auth = await authenticatedTeacher(req);
     if (auth instanceof Response) return auth;
-    const { teacher } = auth;
+    const { teacher, user } = auth;
 
     if (action === "status") {
-      const { data: workspace } = await db.from("workspace_states").select("revision,updated_at").eq("teacher_id", teacher.id).maybeSingle();
+      const { data: workspace } = await db.from("workspace_states").select("revision,updated_at,state").eq("teacher_id", teacher.id).maybeSingle();
       const links = await studentLinks(teacher.id);
       const queue = await reviewQueue(teacher.id);
-      return json({ ok: true, connected: true, teacher, revision: workspace?.revision ?? 0, updatedAt: workspace?.updated_at ?? null, linkedStudents: links.filter((x: any) => x.telegram_chat_id).length, students: links.length, pendingReview: queue.length, botUsername: botUsername() });
+      return json({
+        ok: true,
+        connected: true,
+        teacher,
+        created: auth.created,
+        isOwner: await isOwnerTeacher(teacher.id),
+        onboardingComplete: Boolean((workspace?.state as any)?.profile?.onboardingComplete),
+        revision: workspace?.revision ?? 0,
+        updatedAt: workspace?.updated_at ?? null,
+        linkedStudents: links.filter((x: any) => x.telegram_chat_id).length,
+        students: links.length,
+        pendingReview: queue.length,
+        botUsername: botUsername(),
+      });
     }
 
     if (action === "pull") {
@@ -345,6 +393,53 @@ Deno.serve(async (req) => {
         botLink: `https://t.me/${botUsername()}?start=student_${link.portal_token}`,
         linked: Boolean(link.telegram_chat_id),
         telegramUsername: link.telegram_username,
+      });
+    }
+
+    if (action === "update-profile") {
+      const name = String(body.name ?? teacher.name ?? "Преподаватель").trim().slice(0, 80) || "Преподаватель";
+      const timezone = String(body.timezone ?? teacher.timezone ?? "Europe/Moscow").trim().slice(0, 80) || "Europe/Moscow";
+      const { error } = await db.from("teachers").update({ name, timezone, updated_at: new Date().toISOString() }).eq("id", teacher.id);
+      if (error) throw error;
+      return json({ ok: true, teacher: { ...teacher, name, timezone } });
+    }
+
+    if (action === "feedback") {
+      const owner = await ownerTeacher();
+      if (!owner?.telegram_id) return json({ ok: false, error: "Владелец beta не найден" }, 500);
+      const kind = String(body.kind ?? "feedback") === "bug" ? "🐛 Ошибка" : "💬 Отзыв";
+      const text = String(body.text ?? "").trim();
+      if (!text) return json({ ok: false, error: "Напиши пару слов" }, 400);
+      const platform = String(body.platform ?? "").trim();
+      const version = String(body.version ?? "").trim();
+      await sendTelegramMessage(owner.telegram_id, `${kind} <b>Rasmus Beta</b>\nОт: <b>${telegramHtml(teacher.name)}</b>${user?.username ? ` (@${telegramHtml(user.username)})` : ""}\n${platform ? `Устройство: ${telegramHtml(platform)}\n` : ""}${version ? `Версия: ${telegramHtml(version)}\n` : ""}\n${telegramHtml(text)}`);
+      return json({ ok: true });
+    }
+
+    if (action === "reset-beta-workspace") {
+      if (await isOwnerTeacher(teacher.id)) return json({ ok: false, error: "Основной кабинет нельзя очистить этой кнопкой" }, 403);
+      const emptyState = {
+        version: "8.0.0",
+        profile: { name: teacher.name, currency: "RUB", onboardingComplete: true },
+        students: [], lessons: [], content: [], reminders: [],
+        reminderSettings: { payment: "review", homework: "auto", lesson: "auto", teacherLesson: "auto", teacherDaily: "auto", teacherReport: "auto", lead: "review" },
+      };
+      await db.from("notification_events").delete().eq("teacher_id", teacher.id);
+      await db.from("reschedule_requests").delete().eq("teacher_id", teacher.id);
+      await db.from("student_links").delete().eq("teacher_id", teacher.id);
+      const { data: current } = await db.from("workspace_states").select("revision").eq("teacher_id", teacher.id).maybeSingle();
+      const revision = Number(current?.revision ?? 0) + 1;
+      const { error } = await db.from("workspace_states").upsert({ teacher_id: teacher.id, state: emptyState, revision, updated_at: new Date().toISOString() }, { onConflict: "teacher_id" });
+      if (error) throw error;
+      return json({ ok: true, state: emptyState, revision });
+    }
+
+    if (action === "beta-access") {
+      if (!(await isOwnerTeacher(teacher.id))) return json({ ok: false, error: "Только владелец beta может копировать приглашение" }, 403);
+      return json({
+        ok: true,
+        botLink: `https://t.me/${botUsername()}?start=beta`,
+        guideUrl: `${appPublicUrl().replace(/\/+$/, "/")}beta-guide.html`,
       });
     }
 

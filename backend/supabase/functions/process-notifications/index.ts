@@ -21,6 +21,11 @@ function html(value: unknown) {
   }[char]!));
 }
 
+function currencySymbol(state: any) {
+  const code = String(state?.profile?.currency ?? "RUB");
+  return code === "EUR" ? "€" : code === "USD" ? "$" : code === "GBP" ? "£" : code === "KZT" ? "₸" : "₽";
+}
+
 function modeFor(state: any, key: string, fallback: ReminderMode): ReminderMode {
   const mode = state?.reminderSettings?.[key];
   return mode === "auto" || mode === "review" || mode === "off" ? mode : fallback;
@@ -192,7 +197,7 @@ async function generateForWorkspace(teacher: any, state: any) {
     const left = Math.max(0, Number(student.packageTotal ?? 0) - Number(student.packageUsed ?? 0));
     if (balance > 0 || (student.paymentMode !== "single" && left <= 1)) {
       const paymentText = balance > 0
-        ? `${html(student.name)}, напоминаю про оплату ${balance.toLocaleString("ru-RU")} ₽. Если уже оплатили — просто не обращай внимания 🙂`
+        ? `${html(student.name)}, напоминаю про оплату ${balance.toLocaleString("ru-RU")} ${currencySymbol(state)}. Если уже оплатили — просто не обращай внимания 🙂`
         : `${html(student.name)}, в пакете осталось ${left} занятие. Можно оплатить следующий пакет, чтобы сохранить время в расписании 🙂`;
       const wasCreated = await createEvent({
         teacherId: teacher.id,

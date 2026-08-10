@@ -45,6 +45,34 @@ function portalUrl(portalToken: string) {
   return url.toString();
 }
 
+async function ensureTeacher(from: any) {
+  const telegramId = Number(from?.id ?? 0);
+  if (!telegramId) return null;
+  const { data: existing, error } = await db.from("teachers").select("id,telegram_id,name,timezone").eq("telegram_id", telegramId).maybeSingle();
+  if (error) throw error;
+  if (existing) return existing;
+  const name = [from?.first_name, from?.last_name].filter(Boolean).join(" ") || "Преподаватель";
+  const inserted = await db.from("teachers").insert({ telegram_id: telegramId, name }).select("id,telegram_id,name,timezone").single();
+  if (inserted.error) throw inserted.error;
+  const teacher = inserted.data;
+  const workspace = await db.from("workspace_states").insert({
+    teacher_id: teacher.id,
+    state: {
+      version: "8.0.0",
+      profile: { name, currency: "RUB", onboardingComplete: false },
+      students: [], lessons: [], content: [], reminders: [],
+      reminderSettings: { payment: "review", homework: "auto", lesson: "auto", teacherLesson: "auto", teacherDaily: "auto", teacherReport: "auto", lead: "review" },
+    },
+    revision: 0,
+  });
+  if (workspace.error) throw workspace.error;
+  return teacher;
+}
+
+function teacherKeyboard() {
+  return { inline_keyboard: [[{ text: "🐾 Открыть Rasmus", web_app: { url: appPublicUrl() } }]] };
+}
+
 function studentKeyboard(portalToken: string) {
   return {
     inline_keyboard: [
@@ -68,10 +96,12 @@ function formatSchedule(state: any, studentId: string) {
   return `<b>Ближайшие уроки</b>\n${rows.join("\n")}`;
 }
 
-function formatPayment(student: any) {
+function formatPayment(student: any, state: any) {
   const balance = Number(student.balance ?? 0);
+  const code = String(state?.profile?.currency ?? "RUB");
+  const symbol = code === "EUR" ? "€" : code === "USD" ? "$" : code === "GBP" ? "£" : code === "KZT" ? "₸" : "₽";
   const left = Math.max(0, Number(student.packageTotal ?? 0) - Number(student.packageUsed ?? 0));
-  const payment = balance > 0 ? `К оплате: <b>${balance.toLocaleString("ru-RU")} ₽</b>` : "Оплата: <b>всё оплачено</b>";
+  const payment = balance > 0 ? `К оплате: <b>${balance.toLocaleString("ru-RU")} ${symbol}</b>` : "Оплата: <b>всё оплачено</b>";
   return `<b>Оплата и пакет</b>\n${payment}\nОсталось занятий: <b>${left}</b>`;
 }
 
@@ -91,7 +121,7 @@ async function replyForCommand(chatId: number, command: string) {
   const text = command === "schedule"
     ? formatSchedule(state, String(link.student_id))
     : command === "payment"
-    ? formatPayment(student)
+    ? formatPayment(student, state)
     : command === "homework"
     ? formatHomework(student)
     : `Привет, ${esc(student.name)}! Здесь можно посмотреть расписание, оплату и домашнее задание.`;
@@ -119,6 +149,23 @@ Deno.serve(async (req) => {
     const chatId = Number(message.chat.id);
     const text = String(message.text ?? "").trim();
     const username = message.from?.username ?? null;
+
+    if (/^\/start(?:@\w+)?\s+beta$/i.test(text)) {
+      const teacher = await ensureTeacher(message.from);
+      if (!teacher) return new Response("ok");
+      try {
+        await telegram("setChatMenuButton", { chat_id: chatId, menu_button: { type: "web_app", text: "Открыть Rasmus", web_app: { url: appPublicUrl() } } });
+      } catch (error) {
+        console.error("setChatMenuButton", error);
+      }
+      await sendTelegramMessage(
+        chatId,
+        `🐾 <b>Добро пожаловать в Rasmus Beta!</b>\n\nЭто отдельный кабинет преподавателя: твои ученики, уроки и оплаты не смешиваются с данными других участников.\n\nНажми кнопку ниже — при первом входе Rasmus предложит короткую настройку.`,
+        { reply_markup: teacherKeyboard() },
+      );
+      return new Response("ok");
+    }
+
     const startMatch = text.match(/^\/start(?:@\w+)?\s+student_([0-9a-f-]{36})$/i);
 
     if (startMatch) {
@@ -154,11 +201,9 @@ Deno.serve(async (req) => {
     if (/^\/start(?:@\w+)?$/i.test(text)) {
       const { data: teacher } = await db.from("teachers").select("telegram_id,name").eq("telegram_id", chatId).maybeSingle();
       if (teacher) {
-        await sendTelegramMessage(chatId, "Rasmus подключён. Открой рабочее пространство кнопкой меню бота.", {
-          reply_markup: { inline_keyboard: [[{ text: "Открыть Rasmus", web_app: { url: appPublicUrl() } }]] },
-        });
+        await sendTelegramMessage(chatId, "Rasmus подключён. Открой свой кабинет кнопкой ниже.", { reply_markup: teacherKeyboard() });
       } else {
-        await replyForCommand(chatId, "help");
+        await sendTelegramMessage(chatId, "🐾 Rasmus сейчас работает в закрытой beta. Если тебя пригласили в фокус-группу, открой специальную ссылку приглашения, которую прислал автор проекта.");
       }
       return new Response("ok");
     }
