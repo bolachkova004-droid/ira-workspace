@@ -1,78 +1,78 @@
 import {
+  APP_VERSION,
   adminClient,
   appPublicUrl,
+  authenticatedUser,
   botUsername,
+  decryptSecret,
+  html,
   json,
   jsonHeaders,
-  localDateTimeToUtc,
+  randomToken,
   sendTelegramMessage,
+  sha256Hex,
   studentFromState,
   upcomingLessons,
-  verifyTelegramInitData,
 } from "../_shared/common.ts";
 
-const db = adminClient();
+const admin = adminClient();
 
-function telegramHtml(value: unknown) {
-  return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
-}
-
-type Teacher = { id: string; telegram_id: number; name: string; timezone: string };
+type AppContext = {
+  db: any;
+  user: any;
+  appUser: any;
+  workspace: any;
+  workspaceId: string;
+  membershipRole: "owner" | "member";
+  isAdmin: boolean;
+};
 
 async function parseBody(req: Request) {
   if (req.method === "GET") return Object.fromEntries(new URL(req.url).searchParams.entries());
+  try { return await req.json(); } catch { return {}; }
+}
+
+function validTimezone(value: string) {
   try {
-    return await req.json();
+    new Intl.DateTimeFormat("en", { timeZone: value }).format();
+    return true;
   } catch {
-    return {};
+    return false;
   }
 }
 
-async function authenticatedTeacher(req: Request): Promise<{ teacher: Teacher; user: any; created: boolean } | Response> {
-  const checked = await verifyTelegramInitData(req.headers.get("x-telegram-init-data") ?? "");
-  if (!checked.ok) return json({ ok: false, error: "Telegram authentication failed", reason: checked.reason }, 401);
-  const { data: existing, error } = await db
-    .from("teachers")
-    .select("id,telegram_id,name,timezone")
-    .eq("telegram_id", checked.user.id)
+function allowedCurrency(value: string) {
+  return /^[A-Z]{3}$/.test(value) ? value : "RUB";
+}
+
+async function appContext(req: Request): Promise<AppContext | Response> {
+  const auth = await authenticatedUser(req);
+  if (!auth.ok) return auth.response;
+  const { user, db } = auth;
+  const profile = await db.from("app_users").select("id,telegram_user_id,telegram_username,first_name,last_name,platform_role,beta_status").eq("id", user.id).maybeSingle();
+  if (profile.error || !profile.data) return json({ ok: false, code: "PROFILE_MISSING", error: "Профиль Rasmus не найден" }, 403);
+  if (profile.data.beta_status !== "active") return json({ ok: false, code: "ACCESS_BLOCKED", error: "Доступ к beta приостановлен" }, 403);
+
+  const membership = await db
+    .from("workspace_members")
+    .select("workspace_id,role,workspaces(id,name,currency,timezone,is_primary,created_at)")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle();
-  if (error) return json({ ok: false, error: error.message }, 500);
-  if (existing) return { teacher: existing as Teacher, user: checked.user, created: false };
+  if (membership.error || !membership.data) return json({ ok: false, code: "WORKSPACE_MISSING", error: "Кабинет не найден" }, 403);
+  const workspace = Array.isArray(membership.data.workspaces) ? membership.data.workspaces[0] : membership.data.workspaces;
+  if (!workspace) return json({ ok: false, code: "WORKSPACE_MISSING", error: "Кабинет не найден" }, 403);
 
-  const fullName = [checked.user.first_name, checked.user.last_name].filter(Boolean).join(" ") || "Преподаватель";
-  const inserted = await db
-    .from("teachers")
-    .insert({ telegram_id: checked.user.id, name: fullName })
-    .select("id,telegram_id,name,timezone")
-    .single();
-  if (inserted.error) return json({ ok: false, error: inserted.error.message }, 500);
-  const teacher = inserted.data as Teacher;
-  const workspace = await db.from("workspace_states").insert({
-    teacher_id: teacher.id,
-    state: {
-      version: "8.0.0",
-      profile: { name: fullName, currency: "RUB", onboardingComplete: false },
-      students: [],
-      lessons: [],
-      content: [],
-      reminders: [],
-      reminderSettings: { payment: "review", homework: "auto", lesson: "auto", teacherLesson: "auto", teacherDaily: "auto", teacherReport: "auto", lead: "review" },
-    },
-    revision: 0,
-  });
-  if (workspace.error) return json({ ok: false, error: workspace.error.message }, 500);
-  return { teacher, user: checked.user, created: true };
-}
-
-async function ownerTeacher() {
-  const { data, error } = await db.from("teachers").select("id,telegram_id,name,timezone").order("created_at", { ascending: true }).limit(1).maybeSingle();
-  if (error) throw error;
-  return data as Teacher | null;
-}
-
-async function isOwnerTeacher(teacherId: string) {
-  const owner = await ownerTeacher();
-  return Boolean(owner && owner.id === teacherId);
+  return {
+    db,
+    user,
+    appUser: profile.data,
+    workspace,
+    workspaceId: membership.data.workspace_id,
+    membershipRole: membership.data.role,
+    isAdmin: profile.data.platform_role === "admin",
+  };
 }
 
 function modeFor(state: any, key: string, fallback: "auto" | "review" | "off" = "review") {
@@ -80,32 +80,139 @@ function modeFor(state: any, key: string, fallback: "auto" | "review" | "off" = 
   return mode === "auto" || mode === "review" || mode === "off" ? mode : fallback;
 }
 
-async function upsertNotification(input: {
-  teacherId: string;
+function validateState(input: any) {
+  if (!input || typeof input !== "object" || !Array.isArray(input.students) || !Array.isArray(input.lessons)) {
+    return "Некорректная структура кабинета";
+  }
+  if (input.students.length > 500 || input.lessons.length > 5_000 || (input.content?.length ?? 0) > 2_000) {
+    return "Слишком много записей в одном запросе";
+  }
+  const studentIds = new Set<string>();
+  for (const student of input.students) {
+    const id = String(student?.id ?? "");
+    if (!/^[A-Za-z0-9_-]{1,120}$/.test(id) || studentIds.has(id)) return "Повторяющийся или некорректный ID ученика";
+    studentIds.add(id);
+  }
+  const lessonIds = new Set<string>();
+  for (const lesson of input.lessons) {
+    const id = String(lesson?.id ?? "");
+    if (!/^[A-Za-z0-9_-]{1,120}$/.test(id) || lessonIds.has(id)) return "Повторяющийся или некорректный ID урока";
+    if (!studentIds.has(String(lesson?.studentId ?? ""))) return "Урок ссылается на отсутствующего ученика";
+    const date = String(lesson?.date ?? "");
+    const time = String(lesson?.time ?? "");
+    const duration = Number(lesson?.duration ?? 60);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(new Date(`${date}T12:00:00`).getTime())) return "Некорректная дата урока";
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) return "Некорректное время урока";
+    if (!Number.isFinite(duration) || duration < 1 || duration > 24 * 60) return "Некорректная длительность урока";
+    if (!['planned','completed','cancelled'].includes(String(lesson?.status ?? 'planned'))) return "Некорректный статус урока";
+    if (String(lesson?.title ?? "").length > 500 || String(lesson?.link ?? "").length > 2_000) return "Слишком длинные данные урока";
+    lessonIds.add(id);
+  }
+  for (const collection of [input.content ?? [], input.reminders ?? []]) {
+    if (!Array.isArray(collection)) return "Некорректная структура кабинета";
+    const ids = new Set<string>();
+    for (const item of collection) {
+      const id = String(item?.id ?? "");
+      if (!/^[A-Za-z0-9_-]{1,120}$/.test(id) || ids.has(id)) return "Некорректный ID записи";
+      ids.add(id);
+    }
+  }
+  const encoded = JSON.stringify(input);
+  if (new TextEncoder().encode(encoded).length > 3_000_000) return "Кабинет превышает допустимый размер";
+  return "";
+}
+
+async function studentLinks(ctx: AppContext) {
+  const result = await ctx.db
+    .from("student_links")
+    .select("id,student_id,student_name,telegram_user_id,telegram_chat_id,telegram_username,linked_at")
+    .eq("workspace_id", ctx.workspaceId)
+    .order("student_name");
+  if (result.error) throw result.error;
+  return result.data ?? [];
+}
+
+async function reviewQueue(ctx: AppContext) {
+  const result = await ctx.db
+    .from("notification_events")
+    .select("id,student_link_id,kind,text,send_at,status,created_at,source,student_links(student_id,student_name)")
+    .eq("workspace_id", ctx.workspaceId)
+    .eq("status", "review")
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (result.error) throw result.error;
+  return (result.data ?? []).map((row: any) => {
+    const link = Array.isArray(row.student_links) ? row.student_links[0] : row.student_links;
+    return { ...row, student_id: link?.student_id ?? null, student_name: link?.student_name ?? null, student_links: undefined };
+  });
+}
+
+async function syncStudentLinks(ctx: AppContext, state: any) {
+  const students = Array.isArray(state?.students) ? state.students : [];
+  const ids = students.map((student: any) => String(student.id));
+  for (const student of students) {
+    const result = await ctx.db.from("student_links").upsert({
+      workspace_id: ctx.workspaceId,
+      student_id: String(student.id),
+      student_name: String(student.name || "Ученик").slice(0, 160),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "workspace_id,student_id" });
+    if (result.error) throw result.error;
+  }
+  const existing = await ctx.db.from("student_links").select("id,student_id").eq("workspace_id", ctx.workspaceId);
+  if (existing.error) throw existing.error;
+  for (const row of existing.data ?? []) {
+    if (!ids.includes(String(row.student_id))) {
+      const removed = await ctx.db.from("student_links").delete().eq("workspace_id", ctx.workspaceId).eq("id", row.id);
+      if (removed.error) throw removed.error;
+    }
+  }
+}
+
+async function upsertNotification(ctx: AppContext, input: {
   studentId?: string;
   kind: string;
   dedupeKey: string;
   text: string;
-  sendAt?: string;
   status: "review" | "queued";
   source?: Record<string, unknown>;
 }) {
-  const { error } = await db.from("notification_events").upsert({
-    teacher_id: input.teacherId,
-    student_id: input.studentId ?? null,
+  let studentLinkId: string | null = null;
+  if (input.studentId) {
+    const link = await ctx.db.from("student_links").select("id").eq("workspace_id", ctx.workspaceId).eq("student_id", input.studentId).maybeSingle();
+    if (link.error) throw link.error;
+    studentLinkId = link.data?.id ?? null;
+    // Never fall back to the teacher when a student destination is missing.
+    // The next state sync/worker pass can safely create the event after the
+    // student index exists.
+    if (!studentLinkId) return;
+  }
+  const result = await ctx.db.from("notification_events").upsert({
+    workspace_id: ctx.workspaceId,
+    student_link_id: studentLinkId,
     kind: input.kind,
     dedupe_key: input.dedupeKey,
     text: input.text,
-    send_at: input.sendAt ?? new Date().toISOString(),
+    send_at: new Date().toISOString(),
     status: input.status,
     source: input.source ?? {},
     updated_at: new Date().toISOString(),
-  }, { onConflict: "teacher_id,dedupe_key", ignoreDuplicates: true });
-  if (error) throw error;
+  }, { onConflict: "workspace_id,dedupe_key", ignoreDuplicates: true });
+  if (result.error) throw result.error;
 }
 
-async function createChangeNotifications(teacher: Teacher, oldState: any, newState: any) {
-  const oldLessons = new Map((oldState?.lessons ?? []).map((l: any) => [String(l.id), l]));
+async function cancelLessonJobs(ctx: AppContext, lessonId: string) {
+  const result = await ctx.db
+    .from("notification_events")
+    .update({ status: "dismissed", error: "Lesson changed", updated_at: new Date().toISOString() })
+    .eq("workspace_id", ctx.workspaceId)
+    .in("status", ["review", "queued", "blocked", "failed"])
+    .contains("source", { lessonId });
+  if (result.error) throw result.error;
+}
+
+async function createChangeNotifications(ctx: AppContext, oldState: any, newState: any) {
+  const oldLessons = new Map((oldState?.lessons ?? []).map((lesson: any) => [String(lesson.id), lesson]));
   const mode = modeFor(newState, "lesson", "auto");
   if (mode === "off") return;
   const status = mode === "auto" ? "queued" : "review";
@@ -113,167 +220,243 @@ async function createChangeNotifications(teacher: Teacher, oldState: any, newSta
   for (const lesson of newState?.lessons ?? []) {
     const student = studentFromState(newState, String(lesson.studentId));
     if (!student) continue;
+    const studentName = html(student.name || "Ученик");
+    const lessonTitle = html(lesson.title || "Урок английского");
     const previous: any = oldLessons.get(String(lesson.id));
-    const when = `${lesson.date} в ${lesson.time}`;
-
+    const when = `${html(lesson.date)} в ${html(lesson.time)}`;
     if (!previous && lesson.status !== "cancelled") {
-      await upsertNotification({
-        teacherId: teacher.id,
-        studentId: String(student.id),
-        kind: "lesson_created",
+      await upsertNotification(ctx, {
+        studentId: String(student.id), kind: "lesson_created",
         dedupeKey: `lesson-created:${lesson.id}:${lesson.date}:${lesson.time}`,
-        text: `${student.name}, занятие запланировано на ${when}. ${lesson.title || "Урок английского"}.`,
-        status,
-        source: { lessonId: lesson.id },
+        text: `${studentName}, занятие запланировано на ${when}. ${lessonTitle}.`,
+        status, source: { lessonId: lesson.id, recipient: "student" },
       });
       continue;
     }
     if (!previous) continue;
-
     const moved = previous.date !== lesson.date || previous.time !== lesson.time;
     const cancelled = previous.status !== "cancelled" && lesson.status === "cancelled";
+    if (moved || cancelled) await cancelLessonJobs(ctx, String(lesson.id));
     if (moved && lesson.status !== "cancelled") {
-      await upsertNotification({
-        teacherId: teacher.id,
-        studentId: String(student.id),
-        kind: "lesson_rescheduled",
+      await upsertNotification(ctx, {
+        studentId: String(student.id), kind: "lesson_rescheduled",
         dedupeKey: `lesson-moved:${lesson.id}:${lesson.date}:${lesson.time}`,
-        text: `${student.name}, урок перенесён: теперь ${when}.`,
-        status,
-        source: { lessonId: lesson.id, previousDate: previous.date, previousTime: previous.time },
+        text: `${studentName}, урок перенесён: теперь ${when}.`, status,
+        source: { lessonId: lesson.id, recipient: "student", previousDate: previous.date, previousTime: previous.time },
       });
     }
     if (cancelled) {
-      await upsertNotification({
-        teacherId: teacher.id,
-        studentId: String(student.id),
-        kind: "lesson_cancelled",
+      await upsertNotification(ctx, {
+        studentId: String(student.id), kind: "lesson_cancelled",
         dedupeKey: `lesson-cancelled:${lesson.id}:${lesson.date}:${lesson.time}`,
-        text: `${student.name}, урок ${when} отменён.`,
-        status,
-        source: { lessonId: lesson.id },
+        text: `${studentName}, урок ${when} отменён.`, status,
+        source: { lessonId: lesson.id, recipient: "student" },
       });
     }
   }
 }
 
-async function syncStudentLinks(teacherId: string, state: any) {
-  const students = Array.isArray(state?.students) ? state.students : [];
-  const ids = students.map((s: any) => String(s.id));
-  for (const student of students) {
-    const { error } = await db.from("student_links").upsert({
-      teacher_id: teacherId,
-      student_id: String(student.id),
-      student_name: String(student.name || "Ученик"),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "teacher_id,student_id" });
-    if (error) throw error;
+async function destinationFor(ctx: AppContext, event: any) {
+  if (event.student_link_id) {
+    const link = await ctx.db.from("student_links").select("telegram_chat_id").eq("workspace_id", ctx.workspaceId).eq("id", event.student_link_id).maybeSingle();
+    if (link.error) throw link.error;
+    return link.data?.telegram_chat_id ? Number(link.data.telegram_chat_id) : null;
   }
-  const { data: existing } = await db.from("student_links").select("student_id").eq("teacher_id", teacherId);
-  for (const row of existing ?? []) {
-    if (!ids.includes(String(row.student_id))) {
-      await db.from("student_links").delete().eq("teacher_id", teacherId).eq("student_id", row.student_id);
-    }
-  }
+  return Number(ctx.appUser.telegram_user_id || 0) || null;
 }
 
-async function reviewQueue(teacherId: string) {
-  const { data, error } = await db
+async function deliverNotification(ctx: AppContext, id: string) {
+  const eventResult = await ctx.db
     .from("notification_events")
-    .select("id,student_id,kind,text,send_at,status,created_at,source")
-    .eq("teacher_id", teacherId)
-    .eq("status", "review")
-    .order("created_at", { ascending: false })
-    .limit(100);
-  if (error) throw error;
-  return data ?? [];
-}
-
-async function studentLinks(teacherId: string) {
-  const { data, error } = await db
-    .from("student_links")
-    .select("student_id,student_name,portal_token,telegram_chat_id,telegram_username,linked_at")
-    .eq("teacher_id", teacherId);
-  if (error) throw error;
-  return data ?? [];
-}
-
-async function deliverNotification(teacherId: string, id: string) {
-  const { data: event, error } = await db
-    .from("notification_events")
-    .select("id,student_id,text,status")
-    .eq("teacher_id", teacherId)
+    .update({ status: "processing", updated_at: new Date().toISOString() })
+    .select("id,student_link_id,text,status,attempts")
+    .eq("workspace_id", ctx.workspaceId)
     .eq("id", id)
+    .in("status", ["review", "queued", "failed", "blocked"])
     .maybeSingle();
-  if (error) throw error;
-  if (!event) throw new Error("Notification not found");
-
-  let chatId: number | null = null;
-  if (event.student_id) {
-    const { data: link } = await db
-      .from("student_links")
-      .select("telegram_chat_id")
-      .eq("teacher_id", teacherId)
-      .eq("student_id", event.student_id)
-      .maybeSingle();
-    chatId = link?.telegram_chat_id ?? null;
-    if (!chatId) {
-      await db.from("notification_events").update({ status: "blocked", error: "Student has not linked Telegram", updated_at: new Date().toISOString() }).eq("id", id);
-      throw new Error("Ученик ещё не подключил Telegram");
-    }
-  } else {
-    const { data: teacher } = await db.from("teachers").select("telegram_id").eq("id", teacherId).maybeSingle();
-    chatId = teacher?.telegram_id ?? null;
-    if (!chatId) throw new Error("Telegram преподавателя не найден");
+  if (eventResult.error || !eventResult.data) throw eventResult.error ?? new Error("Напоминание уже обрабатывается или отправлено");
+  const chatId = await destinationFor(ctx, eventResult.data);
+  if (!chatId) {
+    const blocked = await ctx.db.from("notification_events").update({ status: "blocked", error: "Telegram is not linked", updated_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId).eq("id", id);
+    if (blocked.error) throw blocked.error;
+    throw new Error("Telegram получателя ещё не подключён");
   }
-
   try {
-    const message = await sendTelegramMessage(chatId, event.text);
-    await db.from("notification_events").update({
-      status: "sent",
-      sent_at: new Date().toISOString(),
-      telegram_message_id: message.message_id,
-      error: null,
-      updated_at: new Date().toISOString(),
-    }).eq("id", id);
+    const message = await sendTelegramMessage(chatId, eventResult.data.text);
+    const sent = await ctx.db.from("notification_events").update({
+      status: "sent", sent_at: new Date().toISOString(), telegram_message_id: message.message_id,
+      error: null, updated_at: new Date().toISOString(),
+    }).eq("workspace_id", ctx.workspaceId).eq("id", id);
+    if (sent.error) throw sent.error;
     return message;
   } catch (error) {
-    await db.from("notification_events").update({ status: "failed", error: String(error), updated_at: new Date().toISOString() }).eq("id", id);
+    const failed = await ctx.db.from("notification_events").update({
+      status: "failed", attempts: Number(eventResult.data.attempts ?? 0) + 1,
+      error: String(error).slice(0, 2_000), updated_at: new Date().toISOString(),
+    }).eq("workspace_id", ctx.workspaceId).eq("id", id);
+    if (failed.error) console.error("notification failure state update failed", failed.error);
     throw error;
   }
 }
 
-async function portalPayload(token: string) {
-  const { data: link, error } = await db
-    .from("student_links")
-    .select("teacher_id,student_id,student_name,portal_token,telegram_chat_id")
-    .eq("portal_token", token)
+async function portalRecord(rawToken: string) {
+  if (!/^[A-Za-z0-9_-]{24,64}$/.test(rawToken)) return null;
+  const tokenHash = await sha256Hex(rawToken);
+  const token = await admin
+    .from("student_portal_tokens")
+    .select("id,workspace_id,student_link_id,expires_at")
+    .eq("token_hash", tokenHash)
+    .is("revoked_at", null)
+    .gt("expires_at", new Date().toISOString())
     .maybeSingle();
-  if (error) throw error;
-  if (!link) return null;
-  const { data: workspace } = await db.from("workspace_states").select("state,revision,updated_at").eq("teacher_id", link.teacher_id).maybeSingle();
-  const state = workspace?.state ?? {};
-  const student = studentFromState(state, String(link.student_id));
+  if (token.error || !token.data) return null;
+  await admin.from("student_portal_tokens").update({ last_used_at: new Date().toISOString() }).eq("id", token.data.id);
+  return token.data;
+}
+
+async function portalPayload(rawToken: string) {
+  const token = await portalRecord(rawToken);
+  if (!token) return null;
+  const link = await admin.from("student_links").select("id,student_id,student_name,telegram_chat_id").eq("workspace_id", token.workspace_id).eq("id", token.student_link_id).maybeSingle();
+  if (link.error || !link.data) return null;
+  const workspace = await admin.from("workspaces").select("name,currency,timezone").eq("id", token.workspace_id).maybeSingle();
+  const document = await admin.from("workspace_states").select("state,updated_at").eq("workspace_id", token.workspace_id).maybeSingle();
+  const state = document.data?.state ?? {};
+  const student = studentFromState(state, String(link.data.student_id));
   if (!student) return null;
-  return {
-    student,
-    currency: String(state?.profile?.currency ?? "RUB"),
-    lessons: upcomingLessons(state, String(link.student_id)).slice(0, 12).map((l: any) => ({
-      id: l.id,
-      date: l.date,
-      time: l.time,
-      duration: l.duration,
-      title: l.title,
-      link: l.link,
-      paid: l.paid,
-      status: l.status,
-    })),
-    homework: student.homework ?? [],
-    linkedToTelegram: Boolean(link.telegram_chat_id),
-    botUsername: botUsername(),
-    botLink: `https://t.me/${botUsername()}?start=student_${link.portal_token}`,
-    updatedAt: workspace?.updated_at ?? null,
+  // The workspace state contains private teacher notes, goals, interests and
+  // learning diagnostics. Only return the fields rendered in the student's
+  // own portal.
+  const safeStudent = {
+    name: String(student.name || link.data.student_name || "Ученик").slice(0, 160),
+    paymentMode: student.paymentMode === "single" ? "single" : "package",
+    lessonPrice: Math.max(0, Number(student.lessonPrice ?? 0)),
+    balance: Math.max(0, Number(student.balance ?? 0)),
+    packageName: String(student.packageName ?? "Абонемент").slice(0, 160),
+    packageTotal: Math.max(0, Number(student.packageTotal ?? 0)),
+    packageUsed: Math.max(0, Number(student.packageUsed ?? 0)),
   };
+  const homework = (Array.isArray(student.homework) ? student.homework : []).slice(0, 50).map((item: any) => ({
+    id: String(item.id ?? "").slice(0, 160),
+    title: String(item.title ?? "Домашнее задание").slice(0, 500),
+    due: String(item.due ?? "").slice(0, 20),
+    status: String(item.status ?? "Ожидается").slice(0, 80),
+  }));
+  const safeLessonLink = (value: unknown) => {
+    try {
+      const url = new URL(String(value ?? ""));
+      return url.protocol === "https:" ? url.toString() : "";
+    } catch {
+      return "";
+    }
+  };
+  return {
+    student: safeStudent,
+    teacherName: workspace.data?.name ?? "Преподаватель",
+    currency: workspace.data?.currency ?? state?.profile?.currency ?? "RUB",
+    lessons: upcomingLessons(state, String(link.data.student_id), workspace.data?.timezone ?? "Europe/Moscow").slice(0, 12).map((lesson: any) => ({
+      id: String(lesson.id ?? "").slice(0, 120),
+      date: String(lesson.date ?? "").slice(0, 20),
+      time: String(lesson.time ?? "").slice(0, 20),
+      duration: Math.max(1, Math.min(24 * 60, Number(lesson.duration ?? 60))),
+      title: String(lesson.title ?? "Урок английского").replace(/[\r\n]+/g, " ").slice(0, 500),
+      link: safeLessonLink(lesson.link), paid: Boolean(lesson.paid), status: String(lesson.status ?? "planned"),
+    })),
+    homework,
+    linkedToTelegram: Boolean(link.data.telegram_chat_id),
+    botUsername: botUsername(),
+    botLink: `https://t.me/${botUsername()}`,
+    updatedAt: document.data?.updated_at ?? null,
+  };
+}
+
+async function googleConnection(workspaceId: string) {
+  const result = await admin.from("calendar_connections").select("id,workspace_id,account_email,calendar_id,refresh_token_ciphertext,revoked_at").eq("workspace_id", workspaceId).is("revoked_at", null).maybeSingle();
+  if (result.error) throw result.error;
+  return result.data;
+}
+
+async function googleAccessToken(connection: any) {
+  const refreshToken = await decryptSecret(connection.refresh_token_ciphertext);
+  const clientId = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
+  const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "";
+  if (!clientId || !clientSecret) throw new Error("Google Calendar не настроен на сервере");
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.access_token) throw new Error(data.error_description || "Google token refresh failed");
+  return { token: data.access_token as string, refreshToken };
+}
+
+function calendarPayload(lesson: any, state: any, timezone: string) {
+  const student = studentFromState(state, String(lesson.studentId));
+  const start = `${lesson.date}T${lesson.time}:00`;
+  const [hour, minute] = String(lesson.time).split(":").map(Number);
+  const endDate = new Date(Date.UTC(2000, 0, 1, hour, minute + Number(lesson.duration || 60)));
+  const endTime = `${String(endDate.getUTCHours()).padStart(2,"0")}:${String(endDate.getUTCMinutes()).padStart(2,"0")}`;
+  let endDay = lesson.date;
+  if (endDate.getUTCDate() > 1) {
+    const d = new Date(`${lesson.date}T12:00:00`); d.setDate(d.getDate() + 1);
+    endDay = d.toISOString().slice(0, 10);
+  }
+  return {
+    summary: `${lesson.title || "Урок английского"} · ${student?.name || "Ученик"}`,
+    description: [`Урок с ${student?.name || "учеником"}`, lesson.link || ""].filter(Boolean).join("\n"),
+    start: { dateTime: start, timeZone: timezone },
+    end: { dateTime: `${endDay}T${endTime}:00`, timeZone: timezone },
+    extendedProperties: { private: { rasmusLessonId: String(lesson.id) } },
+  };
+}
+
+async function syncGoogleCalendar(ctx: AppContext, oldState: any, newState: any) {
+  const connection = await googleConnection(ctx.workspaceId);
+  if (!connection) return { connected: false, changed: 0 };
+  const { token } = await googleAccessToken(connection);
+  const oldLessons = new Map((oldState?.lessons ?? []).map((lesson: any) => [String(lesson.id), lesson]));
+  const newLessons = new Map((newState?.lessons ?? []).map((lesson: any) => [String(lesson.id), lesson]));
+  const ids = new Set([...oldLessons.keys(), ...newLessons.keys()]);
+  let changed = 0;
+
+  for (const lessonId of ids) {
+    const previous: any = oldLessons.get(lessonId);
+    const lesson: any = newLessons.get(lessonId);
+    const comparable = (value: any) => value ? JSON.stringify([value.studentId,value.date,value.time,value.duration,value.title,value.link,value.status]) : "";
+    if (comparable(previous) === comparable(lesson)) continue;
+    const existing = await admin.from("calendar_event_links").select("provider_event_id,last_payload_hash").eq("workspace_id", ctx.workspaceId).eq("lesson_id", lessonId).maybeSingle();
+    if (existing.error) throw existing.error;
+
+    if (!lesson || lesson.status === "cancelled") {
+      if (existing.data?.provider_event_id) {
+        await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(connection.calendar_id || "primary")}/events/${encodeURIComponent(existing.data.provider_event_id)}`, {
+          method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+        });
+        await admin.from("calendar_event_links").delete().eq("workspace_id", ctx.workspaceId).eq("lesson_id", lessonId);
+        changed++;
+      }
+      continue;
+    }
+
+    const payload = calendarPayload(lesson, newState, ctx.workspace.timezone || "Europe/Moscow");
+    const payloadHash = await sha256Hex(JSON.stringify(payload));
+    if (existing.data?.last_payload_hash === payloadHash) continue;
+    const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(connection.calendar_id || "primary")}/events`;
+    const response = await fetch(existing.data?.provider_event_id ? `${base}/${encodeURIComponent(existing.data.provider_event_id)}` : base, {
+      method: existing.data?.provider_event_id ? "PATCH" : "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.id) throw new Error(data.error?.message || "Google Calendar sync failed");
+    await admin.from("calendar_event_links").upsert({
+      workspace_id: ctx.workspaceId, lesson_id: lessonId, provider_event_id: data.id,
+      last_payload_hash: payloadHash, synced_at: new Date().toISOString(),
+    }, { onConflict: "workspace_id,lesson_id" });
+    changed++;
+  }
+  return { connected: true, changed };
 }
 
 Deno.serve(async (req) => {
@@ -282,247 +465,326 @@ Deno.serve(async (req) => {
   const action = String(body.action ?? "status");
 
   try {
-    if (action === "claim-owner") {
-      const checked = await verifyTelegramInitData(req.headers.get("x-telegram-init-data") ?? "");
-      if (!checked.ok) return json({ ok: false, error: "Telegram authentication failed", reason: checked.reason }, 401);
-      const expected = Deno.env.get("OWNER_SETUP_CODE");
-      if (!expected || String(body.setupCode ?? "") !== expected) return json({ ok: false, error: "Неверный код подключения" }, 403);
-
-      const { data: current } = await db.from("teachers").select("id,telegram_id,name,timezone").limit(1).maybeSingle();
-      if (current && Number(current.telegram_id) !== Number(checked.user.id)) {
-        return json({ ok: false, error: "Владелец уже подключён" }, 409);
-      }
-      let teacher = current;
-      if (!teacher) {
-        const fullName = [checked.user.first_name, checked.user.last_name].filter(Boolean).join(" ") || "Ира";
-        const inserted = await db.from("teachers").insert({ telegram_id: checked.user.id, name: fullName }).select("id,telegram_id,name,timezone").single();
-        if (inserted.error) throw inserted.error;
-        teacher = inserted.data;
-        await db.from("workspace_states").insert({ teacher_id: teacher.id, state: {}, revision: 0 });
-      }
-      return json({ ok: true, teacher });
-    }
-
     if (action === "portal") {
       const payload = await portalPayload(String(body.token ?? ""));
-      if (!payload) return json({ ok: false, error: "Доступ не найден" }, 404);
-      return json({ ok: true, ...payload });
+      return payload ? json({ ok: true, ...payload }) : json({ ok: false, error: "Доступ не найден или срок ссылки истёк" }, 404);
     }
 
     if (action === "request-reschedule") {
-      const token = String(body.token ?? "");
-      const { data: link } = await db.from("student_links").select("teacher_id,student_id,student_name").eq("portal_token", token).maybeSingle();
-      if (!link) return json({ ok: false, error: "Доступ не найден" }, 404);
-      const { data: request, error } = await db.from("reschedule_requests").insert({
-        teacher_id: link.teacher_id,
-        student_id: link.student_id,
-        lesson_id: body.lessonId ? String(body.lessonId) : null,
-        note: String(body.note ?? "Хочу перенести ближайший урок"),
+      const token = await portalRecord(String(body.token ?? ""));
+      if (!token) return json({ ok: false, error: "Доступ не найден или срок ссылки истёк" }, 404);
+      const link = await admin.from("student_links").select("student_name").eq("workspace_id", token.workspace_id).eq("id", token.student_link_id).maybeSingle();
+      if (!link.data) return json({ ok: false, error: "Ученик не найден" }, 404);
+      const recent = await admin.from("reschedule_requests").select("id").eq("workspace_id", token.workspace_id).eq("student_link_id", token.student_link_id).gte("created_at", new Date(Date.now() - 5 * 60_000).toISOString()).limit(1);
+      if ((recent.data ?? []).length) return json({ ok: false, error: "Запрос уже отправлен. Подожди несколько минут" }, 429);
+      const note = String(body.note ?? "Хочу перенести ближайший урок").trim().slice(0, 800);
+      const inserted = await admin.from("reschedule_requests").insert({
+        workspace_id: token.workspace_id, student_link_id: token.student_link_id,
+        lesson_id: body.lessonId ? String(body.lessonId).slice(0, 120) : null, note,
       }).select("id").single();
-      if (error) throw error;
-      const { data: teacher } = await db.from("teachers").select("telegram_id").eq("id", link.teacher_id).single();
-      if (teacher?.telegram_id) {
-        await sendTelegramMessage(teacher.telegram_id, `🔁 <b>Запрос на перенос</b>\n${telegramHtml(link.student_name)}: ${telegramHtml(body.note ?? "Хочу перенести ближайший урок")}`);
+      if (inserted.error) throw inserted.error;
+      const owner = await admin.from("workspace_members").select("app_users(telegram_user_id)").eq("workspace_id", token.workspace_id).eq("role", "owner").limit(1).maybeSingle();
+      const ownerUser = Array.isArray((owner.data as any)?.app_users) ? (owner.data as any).app_users[0] : (owner.data as any)?.app_users;
+      if (ownerUser?.telegram_user_id) {
+        try {
+          await sendTelegramMessage(ownerUser.telegram_user_id, `🔁 <b>Запрос на перенос</b>\n${html(link.data.student_name)}: ${html(note)}`);
+        } catch (notificationError) {
+          console.error("reschedule notification failed", notificationError);
+        }
       }
-      return json({ ok: true, requestId: request.id });
+      return json({ ok: true, requestId: inserted.data.id });
     }
 
-    const auth = await authenticatedTeacher(req);
-    if (auth instanceof Response) return auth;
-    const { teacher, user } = auth;
+    const context = await appContext(req);
+    if (context instanceof Response) return context;
+    const ctx = context;
 
     if (action === "status") {
-      const { data: workspace } = await db.from("workspace_states").select("revision,updated_at,state").eq("teacher_id", teacher.id).maybeSingle();
-      const links = await studentLinks(teacher.id);
-      const queue = await reviewQueue(teacher.id);
+      const document = await ctx.db.from("workspace_states").select("revision,updated_at,state").eq("workspace_id", ctx.workspaceId).maybeSingle();
+      if (document.error) throw document.error;
+      const links = await studentLinks(ctx);
+      const queue = await reviewQueue(ctx);
+      const snapshot = await ctx.db.from("workspace_snapshots").select("id,expires_at").eq("workspace_id", ctx.workspaceId).is("restored_at", null).gt("expires_at", new Date().toISOString()).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (snapshot.error) throw snapshot.error;
+      const calendar = await googleConnection(ctx.workspaceId);
       return json({
-        ok: true,
-        connected: true,
-        teacher,
-        created: auth.created,
-        isOwner: await isOwnerTeacher(teacher.id),
-        onboardingComplete: Boolean((workspace?.state as any)?.profile?.onboardingComplete),
-        revision: workspace?.revision ?? 0,
-        updatedAt: workspace?.updated_at ?? null,
-        linkedStudents: links.filter((x: any) => x.telegram_chat_id).length,
-        students: links.length,
-        pendingReview: queue.length,
-        botUsername: botUsername(),
+        ok: true, connected: true, workspace: ctx.workspace, membershipRole: ctx.membershipRole,
+        isOwner: Boolean(ctx.workspace.is_primary), isAdmin: ctx.isAdmin,
+        onboardingComplete: Boolean(document.data?.state?.profile?.onboardingComplete),
+        revision: document.data?.revision ?? 0, updatedAt: document.data?.updated_at ?? null,
+        linkedStudents: links.filter((link: any) => link.telegram_chat_id).length,
+        students: links.length, pendingReview: queue.length, botUsername: botUsername(),
+        restorableSnapshot: snapshot.data ?? null,
+        googleCalendar: { connected: Boolean(calendar), accountEmail: calendar?.account_email ?? null },
       });
     }
 
     if (action === "pull") {
-      const { data: workspace, error } = await db.from("workspace_states").select("state,revision,updated_at").eq("teacher_id", teacher.id).maybeSingle();
-      if (error) throw error;
-      const links = await studentLinks(teacher.id);
-      const queue = await reviewQueue(teacher.id);
-      const { data: requests } = await db.from("reschedule_requests").select("id,student_id,lesson_id,note,status,created_at").eq("teacher_id", teacher.id).eq("status", "pending").order("created_at", { ascending: false });
-      return json({ ok: true, state: workspace?.state ?? null, revision: workspace?.revision ?? 0, updatedAt: workspace?.updated_at ?? null, studentLinks: links, notifications: queue, rescheduleRequests: requests ?? [] });
+      const document = await ctx.db.from("workspace_states").select("state,revision,updated_at").eq("workspace_id", ctx.workspaceId).maybeSingle();
+      if (document.error) throw document.error;
+      const links = await studentLinks(ctx);
+      const queue = await reviewQueue(ctx);
+      const requests = await ctx.db.from("reschedule_requests").select("id,student_link_id,lesson_id,note,status,created_at,student_links(student_id,student_name)").eq("workspace_id", ctx.workspaceId).eq("status", "pending").order("created_at", { ascending: false });
+      if (requests.error) throw requests.error;
+      const normalizedRequests = (requests.data ?? []).map((row: any) => {
+        const link = Array.isArray(row.student_links) ? row.student_links[0] : row.student_links;
+        return { id: row.id, student_id: link?.student_id, student_name: link?.student_name, lesson_id: row.lesson_id, note: row.note, status: row.status, created_at: row.created_at };
+      });
+      return json({ ok: true, state: document.data?.state ?? null, revision: document.data?.revision ?? 0, updatedAt: document.data?.updated_at ?? null, studentLinks: links, notifications: queue, rescheduleRequests: normalizedRequests });
     }
 
     if (action === "push") {
-      const nextState = body.state;
-      if (!nextState || !Array.isArray(nextState.students) || !Array.isArray(nextState.lessons)) return json({ ok: false, error: "Некорректные данные" }, 400);
-      const { data: current, error: currentError } = await db.from("workspace_states").select("state,revision").eq("teacher_id", teacher.id).maybeSingle();
-      if (currentError) throw currentError;
-      const currentRevision = Number(current?.revision ?? 0);
+      const nextState = { ...body.state, version: APP_VERSION };
+      const validationError = validateState(nextState);
+      if (validationError) return json({ ok: false, error: validationError }, 400);
+      const current = await ctx.db.from("workspace_states").select("state,revision").eq("workspace_id", ctx.workspaceId).maybeSingle();
+      if (current.error) throw current.error;
+      const currentRevision = Number(current.data?.revision ?? 0);
       const baseRevision = body.baseRevision === undefined || body.baseRevision === null ? currentRevision : Number(body.baseRevision);
       if (!body.force && baseRevision !== currentRevision) {
-        return json({ ok: false, error: "В облаке есть более свежие данные", code: "REVISION_CONFLICT", revision: currentRevision, state: current?.state ?? null }, 409);
+        return json({ ok: false, error: "В облаке есть более свежие данные", code: "REVISION_CONFLICT", revision: currentRevision, state: current.data?.state ?? null }, 409);
       }
-      await createChangeNotifications(teacher, current?.state ?? {}, nextState);
-      await syncStudentLinks(teacher.id, nextState);
-      const revision = currentRevision + 1;
-      const { error } = await db.from("workspace_states").upsert({ teacher_id: teacher.id, state: nextState, revision, updated_at: new Date().toISOString() }, { onConflict: "teacher_id" });
-      if (error) throw error;
-      return json({ ok: true, revision, studentLinks: await studentLinks(teacher.id), notifications: await reviewQueue(teacher.id) });
+      const update = ctx.db.from("workspace_states").update({ state: nextState, revision: currentRevision + 1, updated_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId);
+      const saved = body.force ? await update.select("revision").maybeSingle() : await update.eq("revision", currentRevision).select("revision").maybeSingle();
+      if (saved.error) throw saved.error;
+      if (!saved.data) return json({ ok: false, error: "Данные изменились на другом устройстве", code: "REVISION_CONFLICT" }, 409);
+
+      const warnings: string[] = [];
+      try { await syncStudentLinks(ctx, nextState); } catch (error) { warnings.push(`student_index:${String(error)}`); }
+      try { await createChangeNotifications(ctx, current.data?.state ?? {}, nextState); } catch (error) { warnings.push(`notifications:${String(error)}`); }
+      let calendarSync: any = { connected: false, changed: 0 };
+      try { calendarSync = await syncGoogleCalendar(ctx, current.data?.state ?? {}, nextState); } catch (error) { warnings.push("Google Calendar синхронизируется позже"); }
+      return json({ ok: true, revision: saved.data.revision, studentLinks: await studentLinks(ctx), notifications: await reviewQueue(ctx), calendarSync, warnings });
     }
 
     if (action === "invite") {
       const studentId = String(body.studentId ?? "");
-      const { data: link, error } = await db.from("student_links").select("student_id,student_name,portal_token,telegram_chat_id,telegram_username").eq("teacher_id", teacher.id).eq("student_id", studentId).maybeSingle();
-      if (error) throw error;
-      if (!link) return json({ ok: false, error: "Сначала синхронизируй данные" }, 404);
+      const link = await ctx.db.from("student_links").select("id,student_id,student_name,telegram_chat_id,telegram_username").eq("workspace_id", ctx.workspaceId).eq("student_id", studentId).maybeSingle();
+      if (link.error) throw link.error;
+      if (!link.data) return json({ ok: false, error: "Сначала синхронизируй данные" }, 404);
+      const studentToken = randomToken();
+      const portalToken = randomToken(32);
+      const [studentHash, portalHash] = await Promise.all([sha256Hex(studentToken), sha256Hex(portalToken)]);
+      const revokedStudentInvites = await ctx.db.from("student_invites").update({ revoked_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId).eq("student_link_id", link.data.id).is("claimed_at", null).is("revoked_at", null);
+      if (revokedStudentInvites.error) throw revokedStudentInvites.error;
+      const revokedPortalTokens = await ctx.db.from("student_portal_tokens").update({ revoked_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId).eq("student_link_id", link.data.id).is("revoked_at", null);
+      if (revokedPortalTokens.error) throw revokedPortalTokens.error;
+      const studentInvite = await ctx.db.from("student_invites").insert({
+        workspace_id: ctx.workspaceId, student_link_id: link.data.id, token_hash: studentHash,
+        expires_at: new Date(Date.now() + 7 * 86400_000).toISOString(), created_by: ctx.user.id,
+      });
+      if (studentInvite.error) throw studentInvite.error;
+      const portalInvite = await ctx.db.from("student_portal_tokens").insert({
+        workspace_id: ctx.workspaceId, student_link_id: link.data.id, token_hash: portalHash,
+        expires_at: new Date(Date.now() + 30 * 86400_000).toISOString(), created_by: ctx.user.id,
+      });
+      if (portalInvite.error) throw portalInvite.error;
       const portalUrl = new URL(appPublicUrl());
-      portalUrl.searchParams.set("portal", link.portal_token);
-      const projectUrl = Deno.env.get("SUPABASE_URL") ?? "";
-      if (projectUrl) portalUrl.searchParams.set("api", `${projectUrl}/functions/v1/workspace-api`);
+      portalUrl.searchParams.set("portal", portalToken);
       return json({
-        ok: true,
-        portalUrl: portalUrl.toString(),
-        botLink: `https://t.me/${botUsername()}?start=student_${link.portal_token}`,
-        linked: Boolean(link.telegram_chat_id),
-        telegramUsername: link.telegram_username,
+        ok: true, portalUrl: portalUrl.toString(),
+        botLink: `https://t.me/${botUsername()}?start=student_${studentToken}`,
+        linked: Boolean(link.data.telegram_chat_id), telegramUsername: link.data.telegram_username,
+        studentInviteExpiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(),
+        portalExpiresAt: new Date(Date.now() + 30 * 86400_000).toISOString(),
       });
     }
 
     if (action === "update-profile") {
-      const name = String(body.name ?? teacher.name ?? "Преподаватель").trim().slice(0, 80) || "Преподаватель";
-      const timezone = String(body.timezone ?? teacher.timezone ?? "Europe/Moscow").trim().slice(0, 80) || "Europe/Moscow";
-      const { error } = await db.from("teachers").update({ name, timezone, updated_at: new Date().toISOString() }).eq("id", teacher.id);
-      if (error) throw error;
-      return json({ ok: true, teacher: { ...teacher, name, timezone } });
+      if (ctx.membershipRole !== "owner") return json({ ok: false, error: "Недостаточно прав" }, 403);
+      const name = String(body.name ?? ctx.workspace.name ?? "Преподаватель").trim().slice(0, 80) || "Преподаватель";
+      const timezone = String(body.timezone ?? ctx.workspace.timezone ?? "Europe/Moscow").trim().slice(0, 80);
+      if (!validTimezone(timezone)) return json({ ok: false, error: "Неизвестный часовой пояс" }, 400);
+      const currency = allowedCurrency(String(body.currency ?? ctx.workspace.currency ?? "RUB"));
+      const update = await ctx.db.from("workspaces").update({ name, timezone, currency, updated_at: new Date().toISOString() }).eq("id", ctx.workspaceId).select("id,name,timezone,currency,is_primary").single();
+      if (update.error) throw update.error;
+      return json({ ok: true, workspace: update.data });
     }
 
     if (action === "feedback") {
-      const owner = await ownerTeacher();
-      if (!owner?.telegram_id) return json({ ok: false, error: "Владелец beta не найден" }, 500);
-      const kind = String(body.kind ?? "feedback") === "bug" ? "🐛 Ошибка" : "💬 Отзыв";
-      const text = String(body.text ?? "").trim();
-      if (!text) return json({ ok: false, error: "Напиши пару слов" }, 400);
-      const platform = String(body.platform ?? "").trim();
-      const version = String(body.version ?? "").trim();
-      await sendTelegramMessage(owner.telegram_id, `${kind} <b>Rasmus Beta</b>\nОт: <b>${telegramHtml(teacher.name)}</b>${user?.username ? ` (@${telegramHtml(user.username)})` : ""}\n${platform ? `Устройство: ${telegramHtml(platform)}\n` : ""}${version ? `Версия: ${telegramHtml(version)}\n` : ""}\n${telegramHtml(text)}`);
-      return json({ ok: true });
+      const kind = String(body.kind ?? "feedback") === "bug" ? "bug" : "feedback";
+      const message = String(body.text ?? "").trim().slice(0, 4_000);
+      if (!message) return json({ ok: false, error: "Напиши пару слов" }, 400);
+      const recent = await admin.from("beta_feedback").select("id").eq("user_id", ctx.user.id).gte("created_at", new Date(Date.now() - 30_000).toISOString()).limit(1);
+      if (recent.error) throw recent.error;
+      if ((recent.data ?? []).length) return json({ ok: false, error: "Отзыв уже отправлен. Подожди полминуты" }, 429);
+      const technicalId = randomToken(8);
+      const inserted = await ctx.db.from("beta_feedback").insert({
+        user_id: ctx.user.id, workspace_id: ctx.workspaceId, kind, message,
+        screen: String(body.screen ?? "").slice(0, 80), app_version: String(body.version ?? APP_VERSION).slice(0, 40),
+        platform: String(body.platform ?? "").slice(0, 120), technical_id: technicalId,
+      }).select("id").single();
+      if (inserted.error) throw inserted.error;
+      const owner = await admin.from("app_users").select("telegram_user_id").eq("platform_role", "admin").eq("beta_status", "active").order("created_at").limit(1).maybeSingle();
+      if (owner.data?.telegram_user_id) {
+        const label = kind === "bug" ? "🐛 Ошибка" : "💬 Отзыв";
+        try {
+          await sendTelegramMessage(owner.data.telegram_user_id, `${label} <b>Rasmus Beta</b>\nОт: <b>${html(ctx.workspace.name)}</b>\nЭкран: ${html(body.screen || "не указан")}\nВерсия: ${html(body.version || APP_VERSION)}\nID: <code>${technicalId}</code>\n\n${html(message)}`);
+        } catch (notificationError) {
+          console.error("feedback notification failed", notificationError);
+        }
+      }
+      return json({ ok: true, feedbackId: inserted.data.id, technicalId });
+    }
+
+    if (action === "reset-preview") {
+      if (ctx.isAdmin || ctx.workspace.is_primary) return json({ ok: false, error: "Основной кабинет нельзя очистить этой кнопкой" }, 403);
+      const document = await ctx.db.from("workspace_states").select("state").eq("workspace_id", ctx.workspaceId).single();
+      if (document.error) throw document.error;
+      const pending = await ctx.db.from("notification_events").select("id", { count: "exact", head: true }).eq("workspace_id", ctx.workspaceId).in("status", ["review","queued","blocked","failed"]);
+      if (pending.error) throw pending.error;
+      return json({ ok: true, counts: {
+        students: document.data?.state?.students?.length ?? 0,
+        lessons: document.data?.state?.lessons?.length ?? 0,
+        content: document.data?.state?.content?.length ?? 0,
+        pendingNotifications: pending.count ?? 0,
+      } });
     }
 
     if (action === "reset-beta-workspace") {
-      if (await isOwnerTeacher(teacher.id)) return json({ ok: false, error: "Основной кабинет нельзя очистить этой кнопкой" }, 403);
-      const emptyState = {
-        version: "8.0.0",
-        profile: { name: teacher.name, currency: "RUB", onboardingComplete: true },
-        students: [], lessons: [], content: [], reminders: [],
-        reminderSettings: { payment: "review", homework: "auto", lesson: "auto", teacherLesson: "auto", teacherDaily: "auto", teacherReport: "auto", lead: "review" },
-      };
-      await db.from("notification_events").delete().eq("teacher_id", teacher.id);
-      await db.from("reschedule_requests").delete().eq("teacher_id", teacher.id);
-      await db.from("student_links").delete().eq("teacher_id", teacher.id);
-      const { data: current } = await db.from("workspace_states").select("revision").eq("teacher_id", teacher.id).maybeSingle();
-      const revision = Number(current?.revision ?? 0) + 1;
-      const { error } = await db.from("workspace_states").upsert({ teacher_id: teacher.id, state: emptyState, revision, updated_at: new Date().toISOString() }, { onConflict: "teacher_id" });
-      if (error) throw error;
-      return json({ ok: true, state: emptyState, revision });
+      if (ctx.isAdmin || ctx.workspace.is_primary) return json({ ok: false, error: "Основной кабинет нельзя очистить этой кнопкой" }, 403);
+      if (String(body.confirmation ?? "") !== "ОЧИСТИТЬ") return json({ ok: false, error: "Нужно подтвердить очистку" }, 400);
+      const reset = await ctx.db.rpc("rasmus_reset_beta_workspace", {
+        p_workspace_id: ctx.workspaceId,
+        p_confirmation: String(body.confirmation),
+      });
+      if (reset.error) throw reset.error;
+      return json({ ok: true, ...(reset.data ?? {}) });
+    }
+
+    if (action === "restore-last-reset") {
+      if (ctx.isAdmin || ctx.workspace.is_primary) return json({ ok: false, error: "Для основного кабинета восстановление beta-сброса не используется" }, 403);
+      const restored = await ctx.db.rpc("rasmus_restore_beta_workspace", { p_workspace_id: ctx.workspaceId });
+      if (restored.error) {
+        if (String(restored.error.message).includes("reset_snapshot_not_found")) return json({ ok: false, error: "Копия для восстановления не найдена" }, 404);
+        throw restored.error;
+      }
+      return json({ ok: true, ...(restored.data ?? {}) });
     }
 
     if (action === "beta-access") {
-      if (!(await isOwnerTeacher(teacher.id))) return json({ ok: false, error: "Только владелец beta может копировать приглашение" }, 403);
-      return json({
-        ok: true,
-        botLink: `https://t.me/${botUsername()}?start=beta`,
-        guideUrl: `${appPublicUrl().replace(/\/+$/, "/")}beta-guide.html`,
-      });
+      if (!ctx.isAdmin) return json({ ok: false, error: "Только администратор beta может создавать приглашения" }, 403);
+      const rawToken = randomToken();
+      const tokenHash = await sha256Hex(rawToken);
+      const expiresAt = new Date(Date.now() + 7 * 86400_000).toISOString();
+      const invite = await ctx.db.from("beta_invites").insert({
+        token_hash: tokenHash, label: String(body.label ?? "Участник фокус-группы").slice(0, 120),
+        expires_at: expiresAt, created_by: ctx.user.id,
+      }).select("id").single();
+      if (invite.error) throw invite.error;
+      return json({ ok: true, inviteId: invite.data.id, expiresAt, botLink: `https://t.me/${botUsername()}?start=beta_${rawToken}`, guideUrl: `${appPublicUrl()}beta-guide.html` });
+    }
+
+    if (action === "beta-admin-summary") {
+      if (!ctx.isAdmin) return json({ ok: false, error: "Недостаточно прав" }, 403);
+      const users = await admin.from("app_users").select("id,telegram_username,first_name,last_name,beta_status,last_active_at,app_version,platform,created_at").neq("platform_role", "admin").order("created_at", { ascending: false }).limit(100);
+      if (users.error) throw users.error;
+      const participants = [];
+      for (const user of users.data ?? []) {
+        const membership = await admin.from("workspace_members").select("workspace_id,workspaces(name)").eq("user_id", user.id).limit(1).maybeSingle();
+        const workspaceName = Array.isArray((membership.data as any)?.workspaces) ? (membership.data as any).workspaces[0]?.name : (membership.data as any)?.workspaces?.name;
+        const document = membership.data?.workspace_id
+          ? await admin.from("workspace_states").select("updated_at,onboarding_complete:state->profile->>onboardingComplete").eq("workspace_id", membership.data.workspace_id).maybeSingle()
+          : null;
+        participants.push({
+          id: user.id, name: [user.first_name,user.last_name].filter(Boolean).join(" ") || workspaceName || "Участник",
+          telegramUsername: user.telegram_username, status: user.beta_status,
+          onboardingComplete: String(document?.data?.onboarding_complete ?? "false") === "true",
+          lastActiveAt: user.last_active_at, workspaceUpdatedAt: document?.data?.updated_at ?? null,
+          appVersion: user.app_version, platform: user.platform,
+        });
+      }
+      const feedback = await admin.from("beta_feedback").select("id", { count: "exact", head: true }).eq("status", "new");
+      const activeInvites = await admin.from("beta_invites").select("id", { count: "exact", head: true }).is("claimed_at", null).is("revoked_at", null).gt("expires_at", new Date().toISOString());
+      return json({ ok: true, participants, newFeedback: feedback.count ?? 0, activeInvites: activeInvites.count ?? 0 });
     }
 
     if (action === "notification-action") {
       const id = String(body.id ?? "");
       const operation = String(body.operation ?? "");
       if (operation === "dismiss") {
-        await db.from("notification_events").update({ status: "dismissed", updated_at: new Date().toISOString() }).eq("teacher_id", teacher.id).eq("id", id);
+        const dismissed = await ctx.db.from("notification_events").update({ status: "dismissed", updated_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId).eq("id", id).select("id").maybeSingle();
+        if (dismissed.error) throw dismissed.error;
+        if (!dismissed.data) return json({ ok: false, error: "Напоминание не найдено" }, 404);
         return json({ ok: true });
       }
       if (operation === "edit") {
-        const text = String(body.text ?? "").trim();
+        const text = String(body.text ?? "").trim().slice(0, 4_000);
         if (!text) return json({ ok: false, error: "Текст пуст" }, 400);
-        await db.from("notification_events").update({ text, updated_at: new Date().toISOString() }).eq("teacher_id", teacher.id).eq("id", id);
+        const edited = await ctx.db.from("notification_events").update({ text, updated_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId).eq("id", id).select("id").maybeSingle();
+        if (edited.error) throw edited.error;
+        if (!edited.data) return json({ ok: false, error: "Напоминание не найдено" }, 404);
         return json({ ok: true });
       }
       if (operation === "approve") {
-        if (body.text) await db.from("notification_events").update({ text: String(body.text), status: "queued", send_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("teacher_id", teacher.id).eq("id", id);
-        else await db.from("notification_events").update({ status: "queued", send_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("teacher_id", teacher.id).eq("id", id);
-        const message = await deliverNotification(teacher.id, id);
+        const update: any = { status: "queued", send_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        if (body.text) update.text = String(body.text).slice(0, 4_000);
+        const approved = await ctx.db.from("notification_events").update(update).eq("workspace_id", ctx.workspaceId).eq("id", id).in("status", ["review", "failed", "blocked"]).select("id").maybeSingle();
+        if (approved.error) throw approved.error;
+        if (!approved.data) return json({ ok: false, error: "Напоминание уже обработано или не найдено" }, 409);
+        const message = await deliverNotification(ctx, id);
         return json({ ok: true, sent: true, messageId: message.message_id });
       }
       return json({ ok: false, error: "Неизвестное действие" }, 400);
     }
 
-
     if (action === "send-student-test") {
       const studentId = String(body.studentId ?? "");
-      const { data: link, error } = await db
-        .from("student_links")
-        .select("student_name,telegram_chat_id")
-        .eq("teacher_id", teacher.id)
-        .eq("student_id", studentId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!link) return json({ ok: false, error: "Ученик не найден в облаке" }, 404);
-      if (!link.telegram_chat_id) return json({ ok: false, error: "Ученик ещё не подключил Telegram по персональной ссылке" }, 409);
-      const message = await sendTelegramMessage(
-        link.telegram_chat_id,
-        `🐾 <b>Тест напоминания Rasmus</b>
-${telegramHtml(link.student_name)}, всё работает — Расмус сможет напоминать об уроках, домашнем задании и оплате.`,
-      );
+      const link = await ctx.db.from("student_links").select("student_name,telegram_chat_id").eq("workspace_id", ctx.workspaceId).eq("student_id", studentId).maybeSingle();
+      if (link.error || !link.data) return json({ ok: false, error: "Ученик не найден в облаке" }, 404);
+      if (!link.data.telegram_chat_id) return json({ ok: false, error: "Ученик ещё не подключил Telegram по персональной ссылке" }, 409);
+      const message = await sendTelegramMessage(link.data.telegram_chat_id, `🐾 <b>Тест напоминания Rasmus</b>\n${html(link.data.student_name)}, всё работает — Rasmus сможет напоминать об уроках, домашнем задании и оплате.`);
       return json({ ok: true, messageId: message.message_id });
-    }
-
-    if (action === "configure-bot") {
-      const token = Deno.env.get("TELEGRAM_BOT_TOKEN");
-      const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET");
-      const projectUrl = Deno.env.get("SUPABASE_URL");
-      if (!token || !secret || !projectUrl) return json({ ok: false, error: "Не заполнены секреты Telegram" }, 500);
-      const api = async (method: string, payload: Record<string, unknown>) => {
-        const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-        const result = await response.json();
-        if (!response.ok || !result.ok) throw new Error(result.description || method);
-        return result.result;
-      };
-      const me = await api("getMe", {});
-      await api("setWebhook", { url: `${projectUrl}/functions/v1/telegram-webhook`, secret_token: secret, allowed_updates: ["message", "callback_query"] });
-      await api("setMyName", { name: "Rasmus" });
-      await api("setMyDescription", { description: "Rasmus помогает преподавателю вести расписание, учеников, абонементы и напоминания." });
-      await api("setMyShortDescription", { short_description: "Расписание, ученики и напоминания преподавателя 🐾" });
-      await api("setMyCommands", { commands: [
-        { command: "schedule", description: "Ближайшие уроки" },
-        { command: "payment", description: "Оплата и пакет" },
-        { command: "homework", description: "Домашнее задание" },
-        { command: "help", description: "Что умеет бот" },
-      ] });
-      await api("setChatMenuButton", { chat_id: teacher.telegram_id, menu_button: { type: "web_app", text: "Открыть Rasmus", web_app: { url: appPublicUrl() } } });
-      const cronSecret = Deno.env.get("CRON_SECRET");
-      if (!cronSecret) return json({ ok: false, error: "CRON_SECRET is not set" }, 500);
-      const cronResult = await db.rpc("install_ira_notification_cron", { p_project_url: projectUrl, p_cron_secret: cronSecret });
-      if (cronResult.error) throw cronResult.error;
-      return json({ ok: true, bot: me, webhookUrl: `${projectUrl}/functions/v1/telegram-webhook`, cronInstalled: true });
     }
 
     if (action === "send-test") {
-      const message = await sendTelegramMessage(teacher.telegram_id, "✅ <b>Rasmus подключён.</b>\nТестовое сообщение пришло успешно 🐾");
+      const message = await sendTelegramMessage(ctx.appUser.telegram_user_id, "✅ <b>Rasmus подключён.</b>\nТестовое сообщение пришло успешно 🐾");
       return json({ ok: true, messageId: message.message_id });
+    }
+
+    if (action === "google-oauth-start") {
+      if (ctx.membershipRole !== "owner") return json({ ok: false, error: "Подключить календарь может владелец кабинета" }, 403);
+      const clientId = Deno.env.get("GOOGLE_CLIENT_ID") ?? "";
+      if (!clientId) return json({ ok: false, error: "Google Calendar ещё не настроен в Rasmus" }, 503);
+      const rawState = randomToken(32);
+      const stateHash = await sha256Hex(rawState);
+      const inserted = await ctx.db.from("calendar_oauth_states").insert({
+        workspace_id: ctx.workspaceId, user_id: ctx.user.id, state_hash: stateHash,
+        expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+      });
+      if (inserted.error) throw inserted.error;
+      const redirectUri = `${Deno.env.get("SUPABASE_URL")}/functions/v1/google-oauth-callback`;
+      const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      url.search = new URLSearchParams({
+        client_id: clientId, redirect_uri: redirectUri, response_type: "code",
+        scope: "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email",
+        access_type: "offline", prompt: "consent", include_granted_scopes: "true", state: rawState,
+      }).toString();
+      return json({ ok: true, url: url.toString() });
+    }
+
+    if (action === "google-calendar-status") {
+      const connection = await googleConnection(ctx.workspaceId);
+      return json({ ok: true, connected: Boolean(connection), accountEmail: connection?.account_email ?? null });
+    }
+
+    if (action === "google-calendar-disconnect") {
+      if (ctx.membershipRole !== "owner") return json({ ok: false, error: "Недостаточно прав" }, 403);
+      const connection = await googleConnection(ctx.workspaceId);
+      if (connection) {
+        try {
+          const refreshToken = await decryptSecret(connection.refresh_token_ciphertext);
+          await fetch("https://oauth2.googleapis.com/revoke", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: refreshToken }) });
+        } catch { /* local disconnect must still succeed */ }
+        const disconnected = await admin.from("calendar_connections").update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("workspace_id", ctx.workspaceId).eq("id", connection.id);
+        if (disconnected.error) throw disconnected.error;
+      }
+      return json({ ok: true });
     }
 
     return json({ ok: false, error: "Unknown action" }, 400);
   } catch (error) {
-    console.error(error);
+    console.error("workspace-api", action, error instanceof Error ? error.message : String(error));
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
   }
 });

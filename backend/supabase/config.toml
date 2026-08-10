@@ -1,8 +1,17 @@
 [functions.workspace-api]
 verify_jwt = false
 
+[functions.telegram-auth]
+verify_jwt = false
+
 [functions.telegram-webhook]
 verify_jwt = false
 
 [functions.process-notifications]
+verify_jwt = false
+
+[functions.google-oauth-callback]
+verify_jwt = false
+
+[functions.project-setup]
 verify_jwt = false

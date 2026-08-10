@@ -1,13 +1,14 @@
-# Rasmus Beta 8.0 — START HERE
+# Rasmus Beta 8.0.1 — START HERE
 
-Полная версия для фокус-группы.
+Это готовый пакет обновления, но он начнёт работать только после загрузки в репозиторий и успешного backend workflow.
 
-## После загрузки в GitHub
+1. Сохраните отдельную резервную копию текущего репозитория и экспорт базы Supabase.
+2. Загрузите содержимое `rasmus-beta-v8.0.1-secure-upload-to-github.zip` в корень репозитория.
+3. Добавьте обязательные GitHub Actions secrets по [CLOUD_SETUP.md](CLOUD_SETUP.md). Особенно важно указать точный числовой `OWNER_TELEGRAM_ID`.
+4. Дождитесь зелёного GitHub Pages deployment.
+5. Запустите `Actions → Deploy Rasmus backend → Run workflow` и дождитесь завершения всех шагов.
+6. Проверьте `https://bolachkova004-droid.github.io/ira-workspace/health.json?v=801` — версия должна быть `8.0.1-beta.1`.
+7. Откройте приложение аккаунтом владельца. Сверьте учеников, уроки, абонементы и напоминания.
+8. Создайте одно персональное приглашение для тестового аккаунта и выполните smoke-test.
 
-- Pages: дождаться зелёной галочки.
-- Backend: `Actions → Deploy Rasmus backend → Run workflow`.
-- Проверка версии: `https://bolachkova004-droid.github.io/ira-workspace/health.json?v=800`
-- Инструкция участнику: `https://bolachkova004-droid.github.io/ira-workspace/beta-guide.html`
-- Приглашение: `https://t.me/ira_workspace_bot?start=beta`
-
-В существующем кабинете владельца данные не очищаются. Новые Telegram-пользователи получают отдельный пустой workspace.
+Старые кабинеты миграция не очищает. Владелец из `OWNER_TELEGRAM_ID` входит напрямую; прежнему тестеру нужно новое одноразовое приглашение, которое привяжет его к сохранённому кабинету. Общая ссылка `https://t.me/ira_workspace_bot?start=beta` отключена.

@@ -1,23 +1,25 @@
-# QA report — Rasmus Beta 8.0.0
+# QA report — Rasmus Beta 8.0.1 Secure
 
-Проверено локально перед сборкой архива:
+Локально перед сборкой проверено:
 
-- JavaScript `docs/index.html`, `docs/404.html`, root `index.html`: `node --check` — OK.
-- TypeScript Edge Functions: синтаксический разбор через TypeScript `transpileModule` — OK.
-- `docs/index.html` и `docs/404.html` синхронизированы.
-- Версия `8.0.0` записана в `health.json`.
-- Workflow использует deploy `--project-ref` без проблемного `supabase link`.
-- Новая миграция базы не требуется.
-- Проверены маршруты: teacher status/pull/push фильтруются по `teacher.id`, полученному из проверенного Telegram initData.
-- Новые преподаватели получают пустой `workspace_states`.
-- Существующие строки `teachers/workspace_states` не очищаются при деплое.
-- В интерфейсе добавлены перенос, отмена, sticky actions, 16px form controls и onboarding.
+- JavaScript root `index.html` разбирается Node.js без синтаксических ошибок.
+- Все семь TypeScript-модулей Edge Functions проходят `deno check` с Supabase JS 2.x.
+- SQL 8.0.1 разбирается настоящим PostgreSQL 15 parser: 162 top-level statements.
+- Миграция выполняется в чистой PostgreSQL-compatible базе со stub-схемами Supabase.
+- Upgrade-тест v7 → v8 сохраняет два workspace, revisions, student links, notification events и reschedule requests; legacy portal token заменяется хэшем.
+- Динамический RLS-тест подтверждает: владелец и тестер видят только свой workspace, cross-workspace update изменяет 0 строк, заблокированный участник видит 0 строк.
+- Динамический reset/restore-тест подтверждает атомарный сброс, восстановление состояния и Telegram-привязок, запрет сброса основного кабинета и запрет прямой смены Telegram chat ID.
+- 11/11 security-contract тестов проверяют отсутствие общего `start=beta`, наличие RLS, JWT auth, хэшированных invite token, закрытого storage bucket, ограниченных column grants и защитного snapshot reset.
+- `index.html`, `docs/index.html` и `docs/404.html` идентичны; `health.json` содержит `8.0.1-beta.1`.
+- Архивы проходят проверку целостности `unzip -t`.
 
-Не может быть проверено локально без живого Telegram/Supabase:
+Требует живого smoke-test после деплоя:
 
-- реальная доставка webhook-сообщений;
-- поведение Telegram WebView на конкретной версии iOS/Android;
+- реальный Telegram webhook и обмен проверенного `initData` на Auth session;
+- сохранность текущего production workspace после применения миграции;
+- доставка bot-сообщений и запуск cron в проекте Supabase;
+- OAuth Google Calendar, если заданы Google credentials;
 - синхронизация между двумя реальными устройствами;
-- фактическая запись в живой Supabase после деплоя.
+- Telegram WebView на используемых версиях iOS/Android.
 
-После установки рекомендуется провести smoke-test владельцем и одним тестовым Telegram-аккаунтом перед отправкой всей фокус-группе.
+Не отправляйте приглашения фокус-группе, пока workflow и smoke-test владельца + одного тестового Telegram-аккаунта не завершились успешно.

@@ -1,9 +1,13 @@
-# Backend Rasmus 7.6.0
+# Backend Rasmus 8.0.1
 
 Supabase Edge Functions:
 
-- `workspace-api` — облако, приглашения, тесты уведомлений;
-- `telegram-webhook` — подключение учеников и команды бота;
-- `process-notifications` — напоминания ученикам и преподавателю.
+- `telegram-auth` — проверка Telegram Mini App `initData`, одноразовый beta invite и выдача Supabase Auth session;
+- `workspace-api` — JWT + RLS API кабинета, приглашения, портал, feedback, reset и Google Calendar;
+- `telegram-webhook` — закрытый вход преподавателей, привязка учеников и команды бота;
+- `process-notifications` — генерация, блокировка, доставка и повторные попытки уведомлений;
+- `google-oauth-callback` — одноразовый OAuth state и зашифрованное хранение Google refresh token;
+- `project-setup` — deploy-secret endpoint для webhook, команд бота и cron.
 
-Cron запускается каждые 5 минут после команды `Настроить бота` в приложении.
+Рекомендуемый способ установки — ручной GitHub Actions workflow из `.github/workflows/deploy-supabase.yml`.
+
