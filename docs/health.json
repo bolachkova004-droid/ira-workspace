@@ -1,6 +1,6 @@
 {
-  "app": "Ira Workspace",
-  "version": "7.6.0",
+  "app": "Rasmus",
+  "version": "7.7.0",
   "status": "ok",
-  "build": "auto-sync-teacher-student-reminders"
+  "build": "calendar-week-day-cancel-report-google-quick-add"
 }

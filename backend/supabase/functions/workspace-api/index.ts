@@ -384,7 +384,7 @@ Deno.serve(async (req) => {
       if (!link.telegram_chat_id) return json({ ok: false, error: "Ученик ещё не подключил Telegram по персональной ссылке" }, 409);
       const message = await sendTelegramMessage(
         link.telegram_chat_id,
-        `🐾 <b>Тест напоминания Ira Workspace</b>
+        `🐾 <b>Тест напоминания Rasmus</b>
 ${telegramHtml(link.student_name)}, всё работает — Расмус сможет напоминать об уроках, домашнем задании и оплате.`,
       );
       return json({ ok: true, messageId: message.message_id });
@@ -403,13 +403,16 @@ ${telegramHtml(link.student_name)}, всё работает — Расмус с�
       };
       const me = await api("getMe", {});
       await api("setWebhook", { url: `${projectUrl}/functions/v1/telegram-webhook`, secret_token: secret, allowed_updates: ["message", "callback_query"] });
+      await api("setMyName", { name: "Rasmus" });
+      await api("setMyDescription", { description: "Rasmus помогает преподавателю вести расписание, учеников, абонементы и напоминания." });
+      await api("setMyShortDescription", { short_description: "Расписание, ученики и напоминания преподавателя 🐾" });
       await api("setMyCommands", { commands: [
         { command: "schedule", description: "Ближайшие уроки" },
         { command: "payment", description: "Оплата и пакет" },
         { command: "homework", description: "Домашнее задание" },
         { command: "help", description: "Что умеет бот" },
       ] });
-      await api("setChatMenuButton", { chat_id: teacher.telegram_id, menu_button: { type: "web_app", text: "Открыть Ira Workspace", web_app: { url: appPublicUrl() } } });
+      await api("setChatMenuButton", { chat_id: teacher.telegram_id, menu_button: { type: "web_app", text: "Открыть Rasmus", web_app: { url: appPublicUrl() } } });
       const cronSecret = Deno.env.get("CRON_SECRET");
       if (!cronSecret) return json({ ok: false, error: "CRON_SECRET is not set" }, 500);
       const cronResult = await db.rpc("install_ira_notification_cron", { p_project_url: projectUrl, p_cron_secret: cronSecret });
@@ -418,7 +421,7 @@ ${telegramHtml(link.student_name)}, всё работает — Расмус с�
     }
 
     if (action === "send-test") {
-      const message = await sendTelegramMessage(teacher.telegram_id, "✅ <b>Ira Workspace подключён.</b>\nТестовое сообщение от Расмуса пришло успешно.");
+      const message = await sendTelegramMessage(teacher.telegram_id, "✅ <b>Rasmus подключён.</b>\nТестовое сообщение пришло успешно 🐾");
       return json({ ok: true, messageId: message.message_id });
     }
 

@@ -1,4 +1,4 @@
-# Ira Workspace 7.6.0
+# Rasmus 7.6.0
 
 Обновление добавляет:
 
@@ -12,7 +12,7 @@
 ## Установка
 
 1. Загрузить содержимое архива в корень репозитория с заменой файлов.
-2. Запустить GitHub Actions → `Deploy Ira Workspace backend` → `Run workflow`.
+2. Запустить GitHub Actions → `Deploy Rasmus backend` → `Run workflow`.
 3. После зелёной галочки полностью закрыть Mini App и открыть снова.
 4. В Настройках нажать `Настроить бота` один раз.
 

@@ -118,6 +118,7 @@ async function generateForWorkspace(teacher: any, state: any) {
   const studentLessonMode = modeFor(state, "lesson", "auto");
   const teacherLessonMode = modeFor(state, "teacherLesson", "auto");
   const teacherDailyMode = modeFor(state, "teacherDaily", "auto");
+  const teacherReportMode = modeFor(state, "teacherReport", "auto");
   const paymentMode = modeFor(state, "payment", "review");
   const homeworkMode = modeFor(state, "homework", "auto");
 
@@ -155,6 +156,17 @@ async function generateForWorkspace(teacher: any, state: any) {
       source: { lessonId: lesson.id, offset: "30m", recipient: "teacher" },
     });
     if (teacherCreated) created++;
+
+    const reportCreated = await createEvent({
+      teacherId: teacher.id,
+      kind: "lesson_report_prompt",
+      dedupeKey: `lesson-report:${lesson.id}:${lesson.date}:${lesson.time}`,
+      text: `📋 Урок с <b>${html(student.name)}</b> закончился. Заполни короткий отчёт — только после этого занятие спишется из абонемента.`,
+      sendAt: new Date(startsAt.getTime() + Number(lesson.duration ?? 60) * 60_000 + 5 * 60_000),
+      mode: teacherReportMode,
+      source: { lessonId: lesson.id, recipient: "teacher", action: "report" },
+    });
+    if (reportCreated) created++;
   }
 
   const currentLocalDate = dateInZone(new Date(), timezone);
@@ -234,7 +246,7 @@ async function destinationFor(event: any) {
 async function sendDue() {
   const { data: events, error } = await db
     .from("notification_events")
-    .select("id,teacher_id,student_id,kind,text,status,send_at")
+    .select("id,teacher_id,student_id,kind,text,status,send_at,source")
     .in("status", ["queued", "blocked"])
     .lte("send_at", new Date().toISOString())
     .order("send_at", { ascending: true })
@@ -246,7 +258,7 @@ async function sendDue() {
   let failed = 0;
   for (const event of events ?? []) {
     const ageMs = Date.now() - new Date(event.send_at).getTime();
-    if (["lesson_reminder", "teacher_lesson_reminder", "teacher_daily", "homework"].includes(event.kind) && ageMs > 6 * 60 * 60_000) {
+    if (["lesson_reminder", "teacher_lesson_reminder", "teacher_daily", "homework", "lesson_report_prompt"].includes(event.kind) && ageMs > 6 * 60 * 60_000) {
       await db.from("notification_events").update({ status: "dismissed", error: "Reminder expired", updated_at: new Date().toISOString() }).eq("id", event.id);
       continue;
     }
@@ -257,7 +269,10 @@ async function sendDue() {
       continue;
     }
     try {
-      const message = await sendTelegramMessage(destination.chatId, event.text);
+      const extra = event.kind === "lesson_report_prompt" && event.source?.lessonId
+        ? { reply_markup: { inline_keyboard: [[{ text: "📋 Заполнить отчёт", web_app: { url: `${(Deno.env.get("APP_PUBLIC_URL") ?? "https://bolachkova004-droid.github.io/ira-workspace/").replace(/\/+$/, "/")}?report=${encodeURIComponent(String(event.source.lessonId))}` } }]] } }
+        : {};
+      const message = await sendTelegramMessage(destination.chatId, event.text, extra);
       await db.from("notification_events").update({
         status: "sent",
         sent_at: new Date().toISOString(),

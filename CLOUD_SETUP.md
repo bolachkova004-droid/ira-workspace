@@ -1,10 +1,10 @@
-# Облако и напоминания — Ira Workspace 7.6.0
+# Облако и напоминания — Rasmus 7.6.0
 
 После загрузки полной версии:
 
-1. GitHub → Actions → `Deploy Ira Workspace backend` → `Run workflow`.
+1. GitHub → Actions → `Deploy Rasmus backend` → `Run workflow`.
 2. Дождаться зелёной галочки.
-3. Открыть Ira Workspace в Telegram → Настройки.
+3. Открыть Rasmus в Telegram → Настройки.
 4. Нажать `Настроить бота`.
 5. Нажать `Тест мне`.
 6. В карточке подключённого ученика нажать `Тест напоминания ученику`.

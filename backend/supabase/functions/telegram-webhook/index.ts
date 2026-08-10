@@ -84,7 +84,7 @@ function formatHomework(student: any) {
 async function replyForCommand(chatId: number, command: string) {
   const data = await linkedStudent(chatId);
   if (!data) {
-    await sendTelegramMessage(chatId, "Ученик пока не привязан к Ira Workspace. Попроси преподавателя прислать персональную ссылку подключения.");
+    await sendTelegramMessage(chatId, "Ученик пока не привязан к Rasmus. Попроси преподавателя прислать персональную ссылку подключения.");
     return;
   }
   const { link, state, student } = data;
@@ -154,8 +154,8 @@ Deno.serve(async (req) => {
     if (/^\/start(?:@\w+)?$/i.test(text)) {
       const { data: teacher } = await db.from("teachers").select("telegram_id,name").eq("telegram_id", chatId).maybeSingle();
       if (teacher) {
-        await sendTelegramMessage(chatId, "Ira Workspace подключён. Открой рабочее пространство кнопкой меню бота.", {
-          reply_markup: { inline_keyboard: [[{ text: "Открыть Ira Workspace", web_app: { url: appPublicUrl() } }]] },
+        await sendTelegramMessage(chatId, "Rasmus подключён. Открой рабочее пространство кнопкой меню бота.", {
+          reply_markup: { inline_keyboard: [[{ text: "Открыть Rasmus", web_app: { url: appPublicUrl() } }]] },
         });
       } else {
         await replyForCommand(chatId, "help");
@@ -167,7 +167,7 @@ Deno.serve(async (req) => {
     if (linked) {
       await sendTelegramMessage(chatId, "Выбери нужный раздел:", { reply_markup: studentKeyboard(linked.link.portal_token) });
     } else {
-      await sendTelegramMessage(chatId, `Это бот Ira Workspace (@${botUsername()}). Для подключения ученика нужна персональная ссылка от преподавателя.`);
+      await sendTelegramMessage(chatId, `Это бот Rasmus (@${botUsername()}). Для подключения ученика нужна персональная ссылка от преподавателя.`);
     }
   } catch (error) {
     console.error(error);
