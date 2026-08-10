@@ -1,10 +1,14 @@
-name: Deploy Ira Workspace backend
+name: Deploy Rasmus backend
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: rasmus-production-backend
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -15,8 +19,15 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      OWNER_SETUP_CODE: ${{ secrets.OWNER_SETUP_CODE }}
+      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      DEPLOY_SECRET: ${{ secrets.DEPLOY_SECRET }}
+      TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+      OWNER_TELEGRAM_ID: ${{ secrets.OWNER_TELEGRAM_ID }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
 
     steps:
       - name: Checkout
@@ -26,35 +37,71 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID TELEGRAM_BOT_TOKEN OWNER_SETUP_CODE; do
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID SUPABASE_DB_PASSWORD TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET CRON_SECRET DEPLOY_SECRET TOKEN_ENCRYPTION_KEY OWNER_TELEGRAM_ID; do
             if [ -z "${!name:-}" ]; then
               echo "Missing GitHub secret: $name" >&2
               exit 1
             fi
           done
+          if ! [[ "$OWNER_TELEGRAM_ID" =~ ^[1-9][0-9]{4,19}$ ]]; then
+            echo "OWNER_TELEGRAM_ID must be a numeric Telegram user ID" >&2
+            exit 1
+          fi
+          if ! [[ "$TOKEN_ENCRYPTION_KEY" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+            echo "TOKEN_ENCRYPTION_KEY must be exactly 32 random bytes encoded as 64 hex characters" >&2
+            exit 1
+          fi
+          for name in TELEGRAM_WEBHOOK_SECRET CRON_SECRET DEPLOY_SECRET; do
+            if ! [[ "${!name}" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+              echo "$name must be an independent 64-character hex secret" >&2
+              exit 1
+            fi
+          done
+          if [ "$SUPABASE_PROJECT_ID" != "trpnamqmuiwrleapxqlk" ]; then
+            echo "This frontend is pinned to Supabase project trpnamqmuiwrleapxqlk; update both frontend endpoints before using another project" >&2
+            exit 1
+          fi
+          if [ -n "${GOOGLE_CLIENT_ID:-}" ] && [ -z "${GOOGLE_CLIENT_SECRET:-}" ]; then
+            echo "GOOGLE_CLIENT_SECRET is required when GOOGLE_CLIENT_ID is set" >&2
+            exit 1
+          fi
+          if [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && [ -z "${GOOGLE_CLIENT_ID:-}" ]; then
+            echo "GOOGLE_CLIENT_ID is required when GOOGLE_CLIENT_SECRET is set" >&2
+            exit 1
+          fi
 
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.113.0
 
-      # Ira Workspace 7.6.0 does not add a new database migration.
-      # We intentionally deploy by project-ref without `supabase link`,
-      # because the current CLI/API-key response is failing during link.
+      - name: Link project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Create server-only secrets
+      - name: Apply database migration
+        run: supabase db push --linked --include-all --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Store server-only secrets
         shell: bash
         run: |
           set -euo pipefail
-          WEBHOOK_SECRET="$(openssl rand -hex 32)"
-          CRON_SECRET="$(openssl rand -hex 32)"
-          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" \
-            TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
-            OWNER_SETUP_CODE="$OWNER_SETUP_CODE" \
-            TELEGRAM_WEBHOOK_SECRET="$WEBHOOK_SECRET" \
-            CRON_SECRET="$CRON_SECRET" \
-            BOT_USERNAME="ira_workspace_bot" \
-            APP_PUBLIC_URL="https://bolachkova004-droid.github.io/ira-workspace/"
+          args=(
+            "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
+            "TELEGRAM_WEBHOOK_SECRET=$TELEGRAM_WEBHOOK_SECRET"
+            "CRON_SECRET=$CRON_SECRET"
+            "DEPLOY_SECRET=$DEPLOY_SECRET"
+            "TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+            "BOT_USERNAME=ira_workspace_bot"
+            "APP_PUBLIC_URL=https://bolachkova004-droid.github.io/ira-workspace/"
+          )
+          args+=("OWNER_TELEGRAM_ID=$OWNER_TELEGRAM_ID")
+          if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
+            args+=("GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID" "GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET")
+          fi
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" "${args[@]}"
+
+      - name: Deploy authentication exchange
+        run: supabase functions deploy telegram-auth --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
 
       - name: Deploy workspace API
         run: supabase functions deploy workspace-api --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
@@ -65,10 +112,24 @@ jobs:
       - name: Deploy reminder worker
         run: supabase functions deploy process-notifications --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
 
+      - name: Deploy Google callback
+        run: supabase functions deploy google-oauth-callback --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
+
+      - name: Deploy private project setup
+        run: supabase functions deploy project-setup --project-ref "$SUPABASE_PROJECT_ID" --no-verify-jwt
+
+      - name: Configure bot and reminder schedule
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "x-deploy-secret: $DEPLOY_SECRET" \
+            "https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/project-setup"
+
       - name: Finish
         shell: bash
         run: |
-          echo "### Backend deployed" >> "$GITHUB_STEP_SUMMARY"
-          echo "Ira Workspace 7.6 functions deployed without Supabase link." >> "$GITHUB_STEP_SUMMARY"
-          echo "Endpoint: https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/workspace-api" >> "$GITHUB_STEP_SUMMARY"
-          echo "Open Ira Workspace → Settings → Настроить бота, then run the test message." >> "$GITHUB_STEP_SUMMARY"
+          echo "### Rasmus backend deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Secure multi-tenant migration, Telegram Auth exchange, RLS, webhook and cron are active." >> "$GITHUB_STEP_SUMMARY"
+          echo "Workspace API: https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/workspace-api" >> "$GITHUB_STEP_SUMMARY"
