@@ -1,13 +1,13 @@
-# Rasmus Beta 8.0.1 — START HERE
+# Rasmus Beta 8.0.2 — START HERE
 
 Это готовый пакет обновления, но он начнёт работать только после загрузки в репозиторий и успешного backend workflow.
 
 1. Сохраните отдельную резервную копию текущего репозитория и экспорт базы Supabase.
-2. Загрузите содержимое `rasmus-beta-v8.0.1-secure-upload-to-github.zip` в корень репозитория.
+2. Загрузите содержимое `rasmus-beta-v8.0.2-owner-recovery-upload-to-github.zip` в корень репозитория.
 3. Добавьте обязательные GitHub Actions secrets по [CLOUD_SETUP.md](CLOUD_SETUP.md). Особенно важно указать точный числовой `OWNER_TELEGRAM_ID`.
 4. Дождитесь зелёного GitHub Pages deployment.
 5. Запустите `Actions → Deploy Rasmus backend → Run workflow` и дождитесь завершения всех шагов.
-6. Проверьте `https://bolachkova004-droid.github.io/ira-workspace/health.json?v=801` — версия должна быть `8.0.1-beta.1`.
+6. Проверьте `https://bolachkova004-droid.github.io/ira-workspace/health.json?v=802` — версия должна быть `8.0.2-beta.1`.
 7. Откройте приложение аккаунтом владельца. Сверьте учеников, уроки, абонементы и напоминания.
 8. Создайте одно персональное приглашение для тестового аккаунта и выполните smoke-test.
 

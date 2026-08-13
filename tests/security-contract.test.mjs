@@ -10,6 +10,7 @@ const api = read("backend/supabase/functions/workspace-api/index.ts");
 const webhook = read("backend/supabase/functions/telegram-webhook/index.ts");
 const worker = read("backend/supabase/functions/process-notifications/index.ts");
 const migration = read("backend/supabase/migrations/202608100001_rasmus_beta_v8_secure.sql");
+const ownerRecovery = read("backend/supabase/migrations/202608130001_rasmus_beta_v802_owner_recovery.sql");
 
 test("frontend exchanges Telegram initData once and uses Bearer sessions", () => {
   assert.match(frontend, /DEFAULT_AUTH_ENDPOINT/);
@@ -29,6 +30,20 @@ test("Telegram identity is cryptographically checked before provisioning", () =>
   assert.match(migration, /if not p_is_platform_owner then/);
   assert.match(auth, /tg\.\$\{randomToken\(18\)\}@rasmus\.invalid/);
   assert.doesNotMatch(auth, /telegram\.\$\{telegramUserId\}@rasmus\.invalid/);
+});
+
+test("configured owner provisioning is idempotent and repairs interrupted upgrades", () => {
+  assert.match(auth, /recoverConfiguredOwner/);
+  assert.match(auth, /rasmus_recover_owner_user/);
+  assert.match(auth, /repair-existing-owner/);
+  assert.match(auth, /diagnosticId/);
+  assert.match(ownerRecovery, /pg_advisory_xact_lock/);
+  assert.match(ownerRecovery, /join private\.legacy_teacher_workspaces/);
+  assert.match(ownerRecovery, /on conflict \(workspace_id, user_id\) do update set role = 'owner'/);
+  assert.doesNotMatch(ownerRecovery, /platform_owner_already_exists/);
+  const clearOldPrimary = ownerRecovery.indexOf("where is_primary and id <> target_workspace_id;");
+  const promoteTarget = ownerRecovery.indexOf("set is_primary = true,");
+  assert.ok(clearOldPrimary >= 0 && promoteTarget > clearOldPrimary, "old primary must be cleared before target promotion");
 });
 
 test("generic beta start does not create or expose a teacher workspace", () => {
@@ -104,5 +119,5 @@ test("published HTML files and health version match the release", () => {
   assert.equal(read("docs/index.html"), frontend);
   assert.equal(read("docs/404.html"), frontend);
   const health = JSON.parse(read("docs/health.json"));
-  assert.equal(health.version, "8.0.1-beta.1");
+  assert.equal(health.version, "8.0.2-beta.1");
 });

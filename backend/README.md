@@ -1,4 +1,4 @@
-# Backend Rasmus 8.0.1
+# Backend Rasmus 8.0.2
 
 Supabase Edge Functions:
 
@@ -10,4 +10,3 @@ Supabase Edge Functions:
 - `project-setup` — deploy-secret endpoint для webhook, команд бота и cron.
 
 Рекомендуемый способ установки — ручной GitHub Actions workflow из `.github/workflows/deploy-supabase.yml`.
-

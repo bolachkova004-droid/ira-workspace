@@ -1,4 +1,4 @@
-# Rasmus Beta 8.0.1 Secure
+# Rasmus Beta 8.0.2 Owner Recovery
 
 Закрытая Telegram Mini App для преподавателей: ученики, расписание, абонементы, отчёты, Telegram-напоминания и опциональная синхронизация с Google Calendar.
 
@@ -13,6 +13,7 @@
 - Тестовый кабинет можно безопасно очистить; снимок доступен для восстановления 7 дней. Основной кабинет этой кнопкой очистить нельзя.
 - Очередь уведомлений получила блокировку обработки, повторные попытки и защиту от отправки ученического сообщения преподавателю.
 - Google Calendar подключается через OAuth; refresh token хранится зашифрованным AES-GCM.
+- Вход владельца теперь сам восстанавливает membership и связь с сохранённым основным workspace после незавершённой миграции. Существующие ученики и уроки не удаляются.
 
 ## Быстрый запуск
 
@@ -29,7 +30,7 @@
 
 - `index.html` — исходный клиент;
 - `docs/` — публикация GitHub Pages;
-- `backend/supabase/migrations/` — legacy-схема и безопасная миграция 8.0.1;
+- `backend/supabase/migrations/` — legacy-схема, безопасная миграция 8.0.1 и исправление входа владельца 8.0.2;
 - `backend/supabase/functions/` — auth exchange, API, webhook, очередь, Google OAuth и deploy-only setup;
 - `.github/workflows/deploy-supabase.yml` — миграция, функции, webhook и cron одним ручным workflow;
 - `tests/` — статические security-contract проверки;

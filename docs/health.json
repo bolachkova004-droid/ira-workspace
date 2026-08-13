@@ -1,6 +1,6 @@
 {
   "app": "Rasmus Beta",
-  "version": "8.0.1-beta.1",
+  "version": "8.0.2-beta.1",
   "status": "ok",
-  "build": "secure-auth-rls-one-time-invites-reset-feedback-google-calendar"
+  "build": "owner-recovery-secure-auth-rls-one-time-invites"
 }

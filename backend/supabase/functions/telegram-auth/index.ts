@@ -47,6 +47,41 @@ function cleanInviteToken(value: unknown) {
   return /^[A-Za-z0-9_-]{24,48}$/.test(token) ? token : "";
 }
 
+type DatabaseError = {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+};
+
+function logDatabaseError(stage: string, error: unknown, context: Record<string, unknown> = {}) {
+  const databaseError = (error ?? {}) as DatabaseError;
+  const diagnosticId = crypto.randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
+  console.error("telegram-auth", JSON.stringify({
+    diagnosticId,
+    stage,
+    code: databaseError.code ?? "unknown",
+    message: databaseError.message ?? String(error),
+    details: databaseError.details ?? "",
+    hint: databaseError.hint ?? "",
+    ...context,
+  }));
+  return diagnosticId;
+}
+
+async function recoverConfiguredOwner(
+  authUserId: string,
+  telegram: { id: number; username?: string; first_name?: string; last_name?: string },
+) {
+  return await admin.rpc("rasmus_recover_owner_user", {
+    p_auth_user_id: authUserId,
+    p_telegram_user_id: telegram.id,
+    p_telegram_username: telegram.username ?? "",
+    p_first_name: telegram.first_name ?? "",
+    p_last_name: telegram.last_name ?? "",
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: jsonHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -90,19 +125,11 @@ Deno.serve(async (req) => {
       .eq("telegram_user_id", telegram.id)
       .maybeSingle();
     if (existing.error) throw existing.error;
-    if (existing.data?.beta_status === "blocked") {
+    if (existing.data?.beta_status === "blocked" && !isConfiguredOwner) {
       return json({ ok: false, code: "ACCESS_BLOCKED", error: "Доступ к beta приостановлен" }, 403);
     }
     if (existing.data) {
-      if (isConfiguredOwner) {
-        const demotedOthers = await admin.from("app_users").update({ platform_role: "user", updated_at: new Date().toISOString() }).neq("id", existing.data.id).eq("platform_role", "admin");
-        if (demotedOthers.error) throw demotedOthers.error;
-        if (existing.data.platform_role !== "admin") {
-          const promoted = await admin.from("app_users").update({ platform_role: "admin", updated_at: new Date().toISOString() }).eq("id", existing.data.id);
-          if (promoted.error) throw promoted.error;
-        }
-        existing.data.platform_role = "admin";
-      } else if (!isConfiguredOwner && existing.data.platform_role === "admin") {
+      if (!isConfiguredOwner && existing.data.platform_role === "admin") {
         const demoted = await admin.from("app_users").update({ platform_role: "user", updated_at: new Date().toISOString() }).eq("id", existing.data.id);
         if (demoted.error) throw demoted.error;
         existing.data.platform_role = "user";
@@ -113,12 +140,12 @@ Deno.serve(async (req) => {
     let created = false;
     let workspaceCreated = false;
     let createdAuthUser = false;
+    let preferredWorkspaceId = "";
     if (!authUserId) {
       const legacy = await admin.from("teachers").select("id").eq("telegram_id", telegram.id).maybeSingle();
       if (legacy.error) throw legacy.error;
 
       let inviteHash = "";
-      const mayBootstrapOwner = !legacy.data && isConfiguredOwner;
 
       if (!isConfiguredOwner) {
         if (!inviteToken) {
@@ -148,44 +175,84 @@ Deno.serve(async (req) => {
         p_first_name: telegram.first_name ?? "",
         p_last_name: telegram.last_name ?? "",
       };
-      const claimed = legacy.data
+      const claimed = isConfiguredOwner
+        ? await recoverConfiguredOwner(authUserId, telegram)
+        : legacy.data
         ? await admin.rpc("rasmus_claim_legacy_user", {
             ...params,
-            p_is_platform_owner: isConfiguredOwner,
+            p_is_platform_owner: false,
             p_token_hash: inviteHash,
           })
-        : mayBootstrapOwner
-        ? await admin.rpc("rasmus_bootstrap_owner_user", params)
         : await admin.rpc("rasmus_claim_beta_invite", { ...params, p_token_hash: inviteHash });
 
       if (claimed.error) {
         if (createdAuthUser) await admin.auth.admin.deleteUser(authUserId).catch(() => undefined);
         const code = String(claimed.error.message).includes("beta_invite") ? "BETA_INVITE_INVALID" : "PROVISIONING_FAILED";
-        return json({ ok: false, code, error: code === "BETA_INVITE_INVALID" ? "Приглашение уже использовано или больше не действует" : "Не удалось создать кабинет" }, 409);
+        const diagnosticId = logDatabaseError(isConfiguredOwner ? "recover-owner" : "claim-invite", claimed.error, {
+          telegramUserId: telegram.id,
+          hasLegacyWorkspace: Boolean(legacy.data),
+        });
+        return json({
+          ok: false,
+          code,
+          diagnosticId,
+          error: code === "BETA_INVITE_INVALID"
+            ? "Приглашение уже использовано или больше не действует"
+            : `Не удалось восстановить кабинет. Код: ${diagnosticId}`,
+        }, 409);
       }
+      if (isConfiguredOwner) preferredWorkspaceId = String(claimed.data ?? "");
       created = true;
-      workspaceCreated = !legacy.data;
+      workspaceCreated = !legacy.data && !isConfiguredOwner;
     }
 
-    const membership = await admin
+    // OWNER_TELEGRAM_ID is the server-side source of truth. Running recovery
+    // on every owner login makes provisioning idempotent and repairs the two
+    // common interrupted-upgrade states: an admin without membership and a
+    // primary workspace still attached to an older Auth account.
+    if (isConfiguredOwner && !createdAuthUser) {
+      const recovered = await recoverConfiguredOwner(authUserId, telegram);
+      if (recovered.error) {
+        const diagnosticId = logDatabaseError("repair-existing-owner", recovered.error, {
+          telegramUserId: telegram.id,
+        });
+        return json({
+          ok: false,
+          code: "OWNER_RECOVERY_FAILED",
+          diagnosticId,
+          error: `Не удалось восстановить доступ к кабинету. Код: ${diagnosticId}`,
+        }, 409);
+      }
+      preferredWorkspaceId = String(recovered.data ?? "");
+      existing.data!.platform_role = "admin";
+    }
+
+    let membershipRequest = admin
       .from("workspace_members")
       .select("workspace_id,role,workspaces(id,name,currency,timezone,is_primary)")
       .eq("user_id", authUserId)
-      .order("created_at", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (preferredWorkspaceId) membershipRequest = membershipRequest.eq("workspace_id", preferredWorkspaceId);
+    const membership = await membershipRequest
       .limit(1)
       .maybeSingle();
-    if (membership.error || !membership.data) throw membership.error ?? new Error("Workspace membership is missing");
+    if (membership.error || !membership.data) {
+      const diagnosticId = logDatabaseError("load-membership", membership.error ?? new Error("Workspace membership is missing"), {
+        telegramUserId: telegram.id,
+        configuredOwner: isConfiguredOwner,
+      });
+      return json({
+        ok: false,
+        code: "MEMBERSHIP_MISSING",
+        diagnosticId,
+        error: `Не удалось найти кабинет. Код: ${diagnosticId}`,
+      }, 409);
+    }
 
     const workspace = Array.isArray((membership.data as any).workspaces)
       ? (membership.data as any).workspaces[0]
       : (membership.data as any).workspaces;
-    if (isConfiguredOwner && !workspace?.is_primary) {
-      const demotedWorkspaces = await admin.from("workspaces").update({ is_primary: false, updated_at: new Date().toISOString() }).neq("id", membership.data.workspace_id);
-      if (demotedWorkspaces.error) throw demotedWorkspaces.error;
-      const primary = await admin.from("workspaces").update({ is_primary: true, updated_at: new Date().toISOString() }).eq("id", membership.data.workspace_id);
-      if (primary.error) throw primary.error;
-      workspace.is_primary = true;
-    } else if (!isConfiguredOwner && workspace?.is_primary) {
+    if (!isConfiguredOwner && workspace?.is_primary) {
       const ordinary = await admin.from("workspaces").update({ is_primary: false, updated_at: new Date().toISOString() }).eq("id", membership.data.workspace_id);
       if (ordinary.error) throw ordinary.error;
       workspace.is_primary = false;
