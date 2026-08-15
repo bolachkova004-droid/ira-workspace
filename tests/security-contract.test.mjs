@@ -9,8 +9,10 @@ const common = read("backend/supabase/functions/_shared/common.ts");
 const api = read("backend/supabase/functions/workspace-api/index.ts");
 const webhook = read("backend/supabase/functions/telegram-webhook/index.ts");
 const worker = read("backend/supabase/functions/process-notifications/index.ts");
+const automation = read("backend/supabase/functions/_shared/workspace-automation.ts");
 const migration = read("backend/supabase/migrations/202608100001_rasmus_beta_v8_secure.sql");
 const ownerRecovery = read("backend/supabase/migrations/202608130001_rasmus_beta_v802_owner_recovery.sql");
+const safeUpdateHotfix = read("backend/supabase/migrations/202608140001_rasmus_beta_v802_safeupdate_hotfix.sql");
 
 test("frontend exchanges Telegram initData once and uses Bearer sessions", () => {
   assert.match(frontend, /DEFAULT_AUTH_ENDPOINT/);
@@ -44,6 +46,8 @@ test("configured owner provisioning is idempotent and repairs interrupted upgrad
   const clearOldPrimary = ownerRecovery.indexOf("where is_primary and id <> target_workspace_id;");
   const promoteTarget = ownerRecovery.indexOf("set is_primary = true,");
   assert.ok(clearOldPrimary >= 0 && promoteTarget > clearOldPrimary, "old primary must be cleared before target promotion");
+  assert.match(safeUpdateHotfix, /update private\.legacy_teacher_workspaces[\s\S]*?where is_owner is distinct from \(workspace_id = target_workspace_id\);/);
+  assert.doesNotMatch(safeUpdateHotfix, /update private\.legacy_teacher_workspaces\s+set is_owner = \(workspace_id = target_workspace_id\);/);
 });
 
 test("generic beta start does not create or expose a teacher workspace", () => {
@@ -89,6 +93,20 @@ test("student reminders never fall back to the teacher", () => {
   assert.match(worker, /if \(input\.studentId && !linkId\) return false;/);
 });
 
+test("overdue Rasmus lessons receive idempotent automatic reports and derived payment checks", () => {
+  assert.match(worker, /completeAutomaticReports/);
+  assert.match(worker, /applyAutomaticReports/);
+  assert.match(worker, /workspace_states"\)\.update\([\s\S]*?\.eq\("revision", currentRevision\)/);
+  assert.match(automation, /lesson\?\.status !== "planned"/);
+  assert.match(automation, /ageMs < config\.afterHours/);
+  assert.match(automation, /lesson\.autoReportGenerated = true/);
+  assert.match(automation, /student\.packageUsed = Math\.min\(total, used \+ 1\)/);
+  assert.match(automation, /lessonPaymentType\(lesson, student\) === "single"/);
+  assert.match(frontend, /Токи и любые события, которые есть только в Google Calendar, не учитываются/);
+  assert.match(frontend, /mergeRemoteAutomaticReports/);
+  assert.match(frontend, /pushCloudLatest\(false,false\)/);
+});
+
 test("reset is recoverable and cannot target the primary/admin workspace", () => {
   assert.match(api, /action === "reset-preview"/);
   assert.match(api, /action === "reset-beta-workspace"/);
@@ -119,5 +137,20 @@ test("published HTML files and health version match the release", () => {
   assert.equal(read("docs/index.html"), frontend);
   assert.equal(read("docs/404.html"), frontend);
   const health = JSON.parse(read("docs/health.json"));
-  assert.equal(health.version, "8.0.2-beta.1");
+  assert.equal(health.version, "8.1.2-beta.1");
+});
+
+test("branded launch screen uses the Rasmus emblem", () => {
+  assert.match(frontend, /class="launch-emblem"/);
+  assert.match(frontend, /src="\.\/rasmus-emblem\.svg"/);
+  assert.match(frontend, /class="launch-dots"/);
+});
+
+test("focus-group controls return usable links and never stringify error objects", () => {
+  assert.match(frontend, /function betaInviteText/);
+  assert.match(frontend, /function openBetaGuide/);
+  assert.match(frontend, /apiErrorMessage/);
+  assert.doesNotMatch(frontend, /new Error\(data\.error\|\|/);
+  assert.match(api, /const inviteId = crypto\.randomUUID\(\)/);
+  assert.match(api, /return json\(\{ ok: true, inviteId, expiresAt, botLink:/);
 });

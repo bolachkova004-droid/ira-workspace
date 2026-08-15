@@ -136,7 +136,8 @@ begin
   where id = target_workspace_id;
 
   update private.legacy_teacher_workspaces
-  set is_owner = (workspace_id = target_workspace_id);
+  set is_owner = (workspace_id = target_workspace_id)
+  where is_owner is distinct from (workspace_id = target_workspace_id);
 
   return target_workspace_id;
 end;

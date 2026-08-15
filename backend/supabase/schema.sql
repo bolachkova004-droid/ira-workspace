@@ -1,6 +1,6 @@
 -- Rasmus Beta 8.0.1 — secure multi-tenant base schema.
--- Apply migrations/202608130001_rasmus_beta_v802_owner_recovery.sql after
--- this base to obtain the current 8.0.2 owner-recovery behavior.
+-- Apply every migration after this base. Version 8.1.0 keeps the 8.0.2
+-- owner-recovery schema and adds auto-reports in the notification worker.
 --
 -- Goals:
 --   * keep every existing teacher workspace and its data;

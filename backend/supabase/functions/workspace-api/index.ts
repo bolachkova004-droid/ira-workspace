@@ -14,6 +14,7 @@ import {
   studentFromState,
   upcomingLessons,
 } from "../_shared/common.ts";
+import { studentPaymentDebt } from "../_shared/workspace-automation.ts";
 
 const admin = adminClient();
 
@@ -331,7 +332,7 @@ async function portalPayload(rawToken: string) {
     name: String(student.name || link.data.student_name || "Ученик").slice(0, 160),
     paymentMode: student.paymentMode === "single" ? "single" : "package",
     lessonPrice: Math.max(0, Number(student.lessonPrice ?? 0)),
-    balance: Math.max(0, Number(student.balance ?? 0)),
+    balance: studentPaymentDebt(state, student),
     packageName: String(student.packageName ?? "Абонемент").slice(0, 160),
     packageTotal: Math.max(0, Number(student.packageTotal ?? 0)),
     packageUsed: Math.max(0, Number(student.packageUsed ?? 0)),
@@ -667,12 +668,14 @@ Deno.serve(async (req) => {
       const rawToken = randomToken();
       const tokenHash = await sha256Hex(rawToken);
       const expiresAt = new Date(Date.now() + 7 * 86400_000).toISOString();
+      const inviteId = crypto.randomUUID();
       const invite = await ctx.db.from("beta_invites").insert({
+        id: inviteId,
         token_hash: tokenHash, label: String(body.label ?? "Участник фокус-группы").slice(0, 120),
         expires_at: expiresAt, created_by: ctx.user.id,
-      }).select("id").single();
+      });
       if (invite.error) throw invite.error;
-      return json({ ok: true, inviteId: invite.data.id, expiresAt, botLink: `https://t.me/${botUsername()}?start=beta_${rawToken}`, guideUrl: `${appPublicUrl()}beta-guide.html` });
+      return json({ ok: true, inviteId, expiresAt, botLink: `https://t.me/${botUsername()}?start=beta_${rawToken}`, guideUrl: `${appPublicUrl()}beta-guide.html` });
     }
 
     if (action === "beta-admin-summary") {
@@ -684,12 +687,12 @@ Deno.serve(async (req) => {
         const membership = await admin.from("workspace_members").select("workspace_id,workspaces(name)").eq("user_id", user.id).limit(1).maybeSingle();
         const workspaceName = Array.isArray((membership.data as any)?.workspaces) ? (membership.data as any).workspaces[0]?.name : (membership.data as any)?.workspaces?.name;
         const document = membership.data?.workspace_id
-          ? await admin.from("workspace_states").select("updated_at,onboarding_complete:state->profile->>onboardingComplete").eq("workspace_id", membership.data.workspace_id).maybeSingle()
+          ? await admin.from("workspace_states").select("updated_at,state").eq("workspace_id", membership.data.workspace_id).maybeSingle()
           : null;
         participants.push({
           id: user.id, name: [user.first_name,user.last_name].filter(Boolean).join(" ") || workspaceName || "Участник",
           telegramUsername: user.telegram_username, status: user.beta_status,
-          onboardingComplete: String(document?.data?.onboarding_complete ?? "false") === "true",
+          onboardingComplete: Boolean(document?.data?.state?.profile?.onboardingComplete),
           lastActiveAt: user.last_active_at, workspaceUpdatedAt: document?.data?.updated_at ?? null,
           appVersion: user.app_version, platform: user.platform,
         });

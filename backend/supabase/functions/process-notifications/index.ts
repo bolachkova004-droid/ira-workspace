@@ -8,6 +8,7 @@ import {
   sendTelegramMessage,
   studentFromState,
 } from "../_shared/common.ts";
+import { applyAutomaticReports, studentPaymentDebt } from "../_shared/workspace-automation.ts";
 
 const admin = adminClient();
 type ReminderMode = "auto" | "review" | "off";
@@ -37,6 +38,12 @@ function dateInZone(date: Date, timezone: string) {
 
 function ruDate(date: string) {
   return new Date(`${date}T12:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+}
+
+function ruPlural(count: number, forms: [string, string, string]) {
+  const absolute = Math.abs(count) % 100;
+  const last = absolute % 10;
+  return absolute > 10 && absolute < 20 ? forms[2] : last === 1 ? forms[0] : last > 1 && last < 5 ? forms[1] : forms[2];
 }
 
 async function studentLinkId(workspaceId: string, studentId: string) {
@@ -91,13 +98,72 @@ function dailyText(workspace: any, state: any, date: string) {
   });
   const students = Array.isArray(state?.students) ? state.students : [];
   const lowPackages = students.filter((student: any) => student.paymentMode !== "single" && Math.max(0, Number(student.packageTotal ?? 0) - Number(student.packageUsed ?? 0)) <= 2);
-  const debts = students.filter((student: any) => Number(student.balance ?? 0) > 0);
+  const debts = students.filter((student: any) => studentPaymentDebt(state, student) > 0);
   const firstName = String(workspace.name || "Преподаватель").trim().split(/\s+/)[0] || "Преподаватель";
   const notes = [
     lowPackages.length ? `📦 Заканчиваются абонементы: ${lowPackages.length}` : "",
     debts.length ? `💳 Есть задолженность: ${debts.length}` : "",
   ].filter(Boolean).join("\n");
   return `☀️ Доброе утро, ${html(firstName)}!\n\n<b>План на ${html(ruDate(date))}</b>\n${rows.length ? rows.join("\n") : "Сегодня уроков нет."}${notes ? `\n\n${notes}` : ""}`;
+}
+
+async function completeAutomaticReports(workspace: any, document: any) {
+  const currentRevision = Number(document.revision ?? 0);
+  const nowMs = Date.now();
+  const automated = applyAutomaticReports(document.state ?? {}, {
+    nowMs,
+    lessonEndMs: (lesson: any) => {
+      const startsAt = localDateTimeToUtc(
+        String(lesson.date ?? ""),
+        String(lesson.time ?? ""),
+        workspace.timezone || "Europe/Moscow",
+      );
+      return startsAt.getTime() + Math.max(1, Number(lesson.duration ?? 60)) * 60_000;
+    },
+  });
+  if (!automated.reports.length) {
+    return { state: document.state ?? {}, reports: 0, skippedOlderLessons: automated.skippedOlderLessons, notificationCreated: 0 };
+  }
+
+  const saved = await admin.from("workspace_states").update({
+    state: automated.state,
+    revision: currentRevision + 1,
+    updated_at: new Date(nowMs).toISOString(),
+  }).eq("workspace_id", workspace.id).eq("revision", currentRevision).select("revision").maybeSingle();
+  if (saved.error) throw saved.error;
+  if (!saved.data) {
+    return { state: document.state ?? {}, reports: 0, skippedOlderLessons: automated.skippedOlderLessons, notificationCreated: 0 };
+  }
+
+  const names = automated.reports.slice(0, 8).map((report) => html(report.studentName));
+  const extra = automated.reports.length > names.length ? ` и ещё ${automated.reports.length - names.length}` : "";
+  const paymentReviews = automated.reports.filter((report) => report.paymentReview).length;
+  const message = [
+    `📋 Rasmus автоматически сформировал ${automated.reports.length} ${ruPlural(automated.reports.length, ["отчёт", "отчёта", "отчётов"])} через 24 часа.`,
+    `<b>${names.join(", ")}${extra}</b>`,
+    "Если какой-то урок не состоялся, открой его и отметь отменённым — списание вернётся.",
+    paymentReviews ? `⚠️ По оплате требуют проверки: ${paymentReviews}.` : "Оплаты пересчитаны по правилам, сохранённым в Rasmus.",
+  ].join("\n\n");
+  const notificationCreated = await createEvent({
+    workspaceId: workspace.id,
+    kind: "auto_report_summary",
+    dedupeKey: `auto-report-summary:${currentRevision + 1}`,
+    text: message,
+    sendAt: new Date(nowMs),
+    mode: "auto",
+    source: {
+      lessonIds: automated.reports.slice(0, 100).map((report) => report.lessonId),
+      autoReports: automated.reports.length,
+      paymentReviews,
+      recipient: "teacher",
+    },
+  });
+  return {
+    state: automated.state,
+    reports: automated.reports.length,
+    skippedOlderLessons: automated.skippedOlderLessons,
+    notificationCreated: notificationCreated ? 1 : 0,
+  };
 }
 
 async function generateForWorkspace(workspace: any, state: any) {
@@ -151,7 +217,7 @@ async function generateForWorkspace(workspace: any, state: any) {
 
   const week = isoWeek();
   for (const student of state?.students ?? []) {
-    const balance = Number(student.balance ?? 0);
+    const balance = studentPaymentDebt(state, student);
     const left = Math.max(0, Number(student.packageTotal ?? 0) - Number(student.packageUsed ?? 0));
     if (balance > 0 || (student.paymentMode !== "single" && left <= 1)) {
       const text = balance > 0
@@ -271,16 +337,22 @@ Deno.serve(async (req) => {
   if (!expected || req.headers.get("x-cron-secret") !== expected) return json({ ok: false, error: "forbidden" }, 403);
   try {
     const maintenance = await cleanupExpired();
-    const documents = await admin.from("workspace_states").select("workspace_id,state");
+    const documents = await admin.from("workspace_states").select("workspace_id,state,revision");
     if (documents.error) throw documents.error;
-    let created = 0;
+    let created = 0, autoReports = 0, skippedOlderLessons = 0;
     for (const document of documents.data ?? []) {
       const workspace = await admin.from("workspaces").select("id,name,timezone").eq("id", document.workspace_id).maybeSingle();
       if (workspace.error) throw workspace.error;
-      if (workspace.data) created += await generateForWorkspace(workspace.data, document.state);
+      if (workspace.data) {
+        const automated = await completeAutomaticReports(workspace.data, document);
+        autoReports += automated.reports;
+        skippedOlderLessons += automated.skippedOlderLessons;
+        created += automated.notificationCreated;
+        created += await generateForWorkspace(workspace.data, automated.state);
+      }
     }
     const delivery = await sendDue();
-    return json({ ok: true, workspaces: documents.data?.length ?? 0, created, maintenance, ...delivery });
+    return json({ ok: true, workspaces: documents.data?.length ?? 0, created, autoReports, skippedOlderLessons, maintenance, ...delivery });
   } catch (error) {
     console.error("process-notifications", error instanceof Error ? error.message : String(error));
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
