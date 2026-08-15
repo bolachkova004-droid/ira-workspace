@@ -7,7 +7,7 @@
 3. Добавьте обязательные GitHub Actions secrets по [CLOUD_SETUP.md](CLOUD_SETUP.md). Особенно важно указать точный числовой `OWNER_TELEGRAM_ID`.
 4. Дождитесь зелёного GitHub Pages deployment.
 5. Запустите `Actions → Deploy Rasmus backend → Run workflow` и дождитесь завершения всех шагов.
-6. Проверьте `https://bolachkova004-droid.github.io/ira-workspace/health.json?v=810` — версия должна быть `8.1.2-beta.1`.
+6. Проверьте `https://bolachkova004-droid.github.io/ira-workspace/health.json?v=810` — версия должна быть `8.2.0-beta.1`.
 7. Откройте приложение аккаунтом владельца. Сверьте учеников, уроки, абонементы и напоминания.
 8. Создайте одно персональное приглашение для тестового аккаунта и выполните smoke-test.
 

@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient, type User } from "npm:@supabase/supabase-js@2";
 
-export const APP_VERSION = "8.1.2-beta.1";
+export const APP_VERSION = "8.2.0-beta.1";
 
 export const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",

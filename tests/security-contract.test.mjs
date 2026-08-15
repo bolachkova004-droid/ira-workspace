@@ -137,7 +137,7 @@ test("published HTML files and health version match the release", () => {
   assert.equal(read("docs/index.html"), frontend);
   assert.equal(read("docs/404.html"), frontend);
   const health = JSON.parse(read("docs/health.json"));
-  assert.equal(health.version, "8.1.2-beta.1");
+  assert.equal(health.version, "8.2.0-beta.1");
 });
 
 test("branded launch screen uses the Rasmus emblem", () => {
@@ -153,4 +153,14 @@ test("focus-group controls return usable links and never stringify error objects
   assert.doesNotMatch(frontend, /new Error\(data\.error\|\|/);
   assert.match(api, /const inviteId = crypto\.randomUUID\(\)/);
   assert.match(api, /return json\(\{ ok: true, inviteId, expiresAt, botLink:/);
+});
+
+test("fast accounting supports report review, payments, subscriptions and gendered wording", () => {
+  assert.match(frontend, /function accountingView/);
+  assert.match(frontend, /data-confirm-report/);
+  assert.match(frontend, /data-toggle-paid/);
+  assert.match(frontend, /function renewSubscription/);
+  assert.match(frontend, /subscriptionHistory/);
+  assert.match(frontend, /function studentGrammar/);
+  assert.match(frontend, /Она: оплатила, ей напомнить/);
 });
