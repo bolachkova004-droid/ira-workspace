@@ -6,6 +6,7 @@ import {
   jsonHeaders,
   localDateTimeToUtc,
   sendTelegramMessage,
+  syncStudentIndex,
   studentFromState,
 } from "../_shared/common.ts";
 import { applyAutomaticReports, studentPaymentDebt } from "../_shared/workspace-automation.ts";
@@ -259,6 +260,12 @@ function retryAt(attempts: number) {
   return new Date(Date.now() + delayMinutes * 60_000).toISOString();
 }
 
+function notificationExpiryMs(kind: string) {
+  if (["lesson_created", "lesson_rescheduled", "lesson_cancelled", "auto_report_summary"].includes(kind)) return 24 * 60 * 60_000;
+  if (kind === "payment") return 7 * 24 * 60 * 60_000;
+  return 6 * 60 * 60_000;
+}
+
 async function sendDue() {
   const now = new Date();
   const result = await admin.from("notification_events")
@@ -276,7 +283,7 @@ async function sendDue() {
     if (claimed.error) throw claimed.error;
     if (!claimed.data) continue;
     const ageMs = Date.now() - new Date(event.send_at).getTime();
-    if (["lesson_reminder","teacher_lesson_reminder","teacher_daily","homework","lesson_report_prompt"].includes(event.kind) && ageMs > 6 * 60 * 60_000) {
+    if (ageMs > notificationExpiryMs(String(event.kind))) {
       const dismissed = await admin.from("notification_events").update({ status: "dismissed", error: "Reminder expired", updated_at: new Date().toISOString() }).eq("id", event.id);
       if (dismissed.error) throw dismissed.error;
       expired++;
@@ -339,11 +346,18 @@ Deno.serve(async (req) => {
     const maintenance = await cleanupExpired();
     const documents = await admin.from("workspace_states").select("workspace_id,state,revision");
     if (documents.error) throw documents.error;
-    let created = 0, autoReports = 0, skippedOlderLessons = 0;
+    let created = 0, autoReports = 0, skippedOlderLessons = 0, studentIndexRepairs = 0, studentIndexFailures = 0;
     for (const document of documents.data ?? []) {
       const workspace = await admin.from("workspaces").select("id,name,timezone").eq("id", document.workspace_id).maybeSingle();
       if (workspace.error) throw workspace.error;
       if (workspace.data) {
+        try {
+          const repaired = await syncStudentIndex(admin, workspace.data.id, document.state ?? {});
+          studentIndexRepairs += repaired.created + repaired.updated + repaired.removed;
+        } catch (indexError) {
+          studentIndexFailures++;
+          console.error("student-index", indexError instanceof Error ? indexError.message : String(indexError));
+        }
         const automated = await completeAutomaticReports(workspace.data, document);
         autoReports += automated.reports;
         skippedOlderLessons += automated.skippedOlderLessons;
@@ -352,7 +366,7 @@ Deno.serve(async (req) => {
       }
     }
     const delivery = await sendDue();
-    return json({ ok: true, workspaces: documents.data?.length ?? 0, created, autoReports, skippedOlderLessons, maintenance, ...delivery });
+    return json({ ok: true, workspaces: documents.data?.length ?? 0, created, autoReports, skippedOlderLessons, studentIndexRepairs, studentIndexFailures, maintenance, ...delivery });
   } catch (error) {
     console.error("process-notifications", error instanceof Error ? error.message : String(error));
     return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);

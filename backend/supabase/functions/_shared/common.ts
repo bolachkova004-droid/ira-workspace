@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient, type User } from "npm:@supabase/supabase-js@2";
 
-export const APP_VERSION = "8.2.0-beta.1";
+export const APP_VERSION = "8.3.1-beta.1";
 
 export const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -61,6 +61,69 @@ export function userClient(req: Request) {
     global: { headers: { Authorization: authorization } },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
+}
+
+export async function syncStudentIndex(db: SupabaseClient, workspaceId: string, state: any) {
+  const desired = new Map<string, string>();
+  for (const student of Array.isArray(state?.students) ? state.students : []) {
+    const studentId = String(student?.id ?? "");
+    if (!studentId) continue;
+    desired.set(studentId, String(student?.name || "Ученик").slice(0, 160));
+  }
+
+  const existingResult = await db
+    .from("student_links")
+    .select("id,student_id,student_name")
+    .eq("workspace_id", workspaceId);
+  if (existingResult.error) throw existingResult.error;
+
+  const existing = new Map<string, any>();
+  for (const row of existingResult.data ?? []) existing.set(String(row.student_id), row);
+
+  let created = 0;
+  let updated = 0;
+  let removed = 0;
+  const updatedAt = new Date().toISOString();
+
+  for (const [studentId, studentName] of desired) {
+    const row = existing.get(studentId);
+    if (!row) {
+      const inserted = await db.from("student_links").insert({
+        workspace_id: workspaceId,
+        student_id: studentId,
+        student_name: studentName,
+        updated_at: updatedAt,
+      }).select("id").single();
+      if (inserted.error) throw inserted.error;
+      created++;
+      continue;
+    }
+    if (String(row.student_name) !== studentName) {
+      // Only mutable display fields are updated. Telegram destinations and
+      // tenant identity columns remain untouched.
+      const renamed = await db.from("student_links").update({
+        student_name: studentName,
+        updated_at: updatedAt,
+      }).eq("workspace_id", workspaceId).eq("id", row.id).select("id").maybeSingle();
+      if (renamed.error) throw renamed.error;
+      if (!renamed.data) throw new Error("Student index row could not be updated");
+      updated++;
+    }
+  }
+
+  for (const row of existing.values()) {
+    if (desired.has(String(row.student_id))) continue;
+    const deleted = await db.from("student_links")
+      .delete()
+      .eq("workspace_id", workspaceId)
+      .eq("id", row.id)
+      .select("id")
+      .maybeSingle();
+    if (deleted.error) throw deleted.error;
+    if (deleted.data) removed++;
+  }
+
+  return { total: desired.size, created, updated, removed };
 }
 
 export async function authenticatedUser(req: Request): Promise<

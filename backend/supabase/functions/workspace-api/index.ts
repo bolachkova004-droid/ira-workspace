@@ -11,6 +11,7 @@ import {
   randomToken,
   sendTelegramMessage,
   sha256Hex,
+  syncStudentIndex,
   studentFromState,
   upcomingLessons,
 } from "../_shared/common.ts";
@@ -149,24 +150,15 @@ async function reviewQueue(ctx: AppContext) {
 }
 
 async function syncStudentLinks(ctx: AppContext, state: any) {
-  const students = Array.isArray(state?.students) ? state.students : [];
-  const ids = students.map((student: any) => String(student.id));
-  for (const student of students) {
-    const result = await ctx.db.from("student_links").upsert({
-      workspace_id: ctx.workspaceId,
-      student_id: String(student.id),
-      student_name: String(student.name || "Ученик").slice(0, 160),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "workspace_id,student_id" });
-    if (result.error) throw result.error;
-  }
-  const existing = await ctx.db.from("student_links").select("id,student_id").eq("workspace_id", ctx.workspaceId);
-  if (existing.error) throw existing.error;
-  for (const row of existing.data ?? []) {
-    if (!ids.includes(String(row.student_id))) {
-      const removed = await ctx.db.from("student_links").delete().eq("workspace_id", ctx.workspaceId).eq("id", row.id);
-      if (removed.error) throw removed.error;
-    }
+  return await syncStudentIndex(ctx.db, ctx.workspaceId, state);
+}
+
+async function repairStudentLinks(ctx: AppContext, state: any) {
+  try {
+    return { result: await syncStudentLinks(ctx, state), warnings: [] as string[] };
+  } catch (error) {
+    console.error("student-index", error instanceof Error ? error.message : String(error));
+    return { result: null, warnings: ["student_index_repair_pending"] };
   }
 }
 
@@ -503,6 +495,7 @@ Deno.serve(async (req) => {
     if (action === "status") {
       const document = await ctx.db.from("workspace_states").select("revision,updated_at,state").eq("workspace_id", ctx.workspaceId).maybeSingle();
       if (document.error) throw document.error;
+      const repair = await repairStudentLinks(ctx, document.data?.state ?? {});
       const links = await studentLinks(ctx);
       const queue = await reviewQueue(ctx);
       const snapshot = await ctx.db.from("workspace_snapshots").select("id,expires_at").eq("workspace_id", ctx.workspaceId).is("restored_at", null).gt("expires_at", new Date().toISOString()).order("created_at", { ascending: false }).limit(1).maybeSingle();
@@ -515,6 +508,7 @@ Deno.serve(async (req) => {
         revision: document.data?.revision ?? 0, updatedAt: document.data?.updated_at ?? null,
         linkedStudents: links.filter((link: any) => link.telegram_chat_id).length,
         students: links.length, pendingReview: queue.length, botUsername: botUsername(),
+        warnings: repair.warnings,
         restorableSnapshot: snapshot.data ?? null,
         googleCalendar: { connected: Boolean(calendar), accountEmail: calendar?.account_email ?? null },
       });
@@ -523,6 +517,7 @@ Deno.serve(async (req) => {
     if (action === "pull") {
       const document = await ctx.db.from("workspace_states").select("state,revision,updated_at").eq("workspace_id", ctx.workspaceId).maybeSingle();
       if (document.error) throw document.error;
+      const repair = await repairStudentLinks(ctx, document.data?.state ?? {});
       const links = await studentLinks(ctx);
       const queue = await reviewQueue(ctx);
       const requests = await ctx.db.from("reschedule_requests").select("id,student_link_id,lesson_id,note,status,created_at,student_links(student_id,student_name)").eq("workspace_id", ctx.workspaceId).eq("status", "pending").order("created_at", { ascending: false });
@@ -531,7 +526,7 @@ Deno.serve(async (req) => {
         const link = Array.isArray(row.student_links) ? row.student_links[0] : row.student_links;
         return { id: row.id, student_id: link?.student_id, student_name: link?.student_name, lesson_id: row.lesson_id, note: row.note, status: row.status, created_at: row.created_at };
       });
-      return json({ ok: true, state: document.data?.state ?? null, revision: document.data?.revision ?? 0, updatedAt: document.data?.updated_at ?? null, studentLinks: links, notifications: queue, rescheduleRequests: normalizedRequests });
+      return json({ ok: true, state: document.data?.state ?? null, revision: document.data?.revision ?? 0, updatedAt: document.data?.updated_at ?? null, studentLinks: links, notifications: queue, rescheduleRequests: normalizedRequests, warnings: repair.warnings });
     }
 
     if (action === "push") {
@@ -551,7 +546,7 @@ Deno.serve(async (req) => {
       if (!saved.data) return json({ ok: false, error: "Данные изменились на другом устройстве", code: "REVISION_CONFLICT" }, 409);
 
       const warnings: string[] = [];
-      try { await syncStudentLinks(ctx, nextState); } catch (error) { warnings.push(`student_index:${String(error)}`); }
+      try { await syncStudentLinks(ctx, nextState); } catch (error) { console.error("student-index", error instanceof Error ? error.message : String(error)); warnings.push("student_index_repair_pending"); }
       try { await createChangeNotifications(ctx, current.data?.state ?? {}, nextState); } catch (error) { warnings.push(`notifications:${String(error)}`); }
       let calendarSync: any = { connected: false, changed: 0 };
       try { calendarSync = await syncGoogleCalendar(ctx, current.data?.state ?? {}, nextState); } catch (error) { warnings.push("Google Calendar синхронизируется позже"); }
@@ -560,9 +555,18 @@ Deno.serve(async (req) => {
 
     if (action === "invite") {
       const studentId = String(body.studentId ?? "");
-      const link = await ctx.db.from("student_links").select("id,student_id,student_name,telegram_chat_id,telegram_username").eq("workspace_id", ctx.workspaceId).eq("student_id", studentId).maybeSingle();
+      let link = await ctx.db.from("student_links").select("id,student_id,student_name,telegram_chat_id,telegram_username").eq("workspace_id", ctx.workspaceId).eq("student_id", studentId).maybeSingle();
       if (link.error) throw link.error;
-      if (!link.data) return json({ ok: false, error: "Сначала синхронизируй данные" }, 404);
+      if (!link.data) {
+        const document = await ctx.db.from("workspace_states").select("state").eq("workspace_id", ctx.workspaceId).maybeSingle();
+        if (document.error) throw document.error;
+        const existsInWorkspace = (document.data?.state?.students ?? []).some((student: any) => String(student?.id) === studentId);
+        if (!existsInWorkspace) return json({ ok: false, error: "Ученик не найден в кабинете" }, 404);
+        await syncStudentLinks(ctx, document.data?.state ?? {});
+        link = await ctx.db.from("student_links").select("id,student_id,student_name,telegram_chat_id,telegram_username").eq("workspace_id", ctx.workspaceId).eq("student_id", studentId).maybeSingle();
+        if (link.error) throw link.error;
+      }
+      if (!link.data) return json({ ok: false, code: "STUDENT_INDEX_PENDING", error: "Связь ученика с Telegram ещё восстанавливается. Нажми «Обновить сейчас» и попробуй снова" }, 409);
       const studentToken = randomToken();
       const portalToken = randomToken(32);
       const [studentHash, portalHash] = await Promise.all([sha256Hex(studentToken), sha256Hex(portalToken)]);
@@ -689,17 +693,53 @@ Deno.serve(async (req) => {
         const document = membership.data?.workspace_id
           ? await admin.from("workspace_states").select("updated_at,state").eq("workspace_id", membership.data.workspace_id).maybeSingle()
           : null;
+        if (membership.error) throw membership.error;
+        if (document?.error) throw document.error;
+        const workspaceState = document?.data?.state && typeof document.data.state === "object" ? document.data.state as any : {};
+        const students = Array.isArray(workspaceState.students) ? workspaceState.students : [];
+        const lessons = Array.isArray(workspaceState.lessons) ? workspaceState.lessons : [];
+        const completedLessons = lessons.filter((lesson: any) => lesson?.status === "completed");
+        const reports = completedLessons.filter((lesson: any) => lesson?.reportCompleted);
+        const reviewedReports = reports.filter((lesson: any) => lesson?.reportVerified || !lesson?.autoReportGenerated);
+        const paymentActions = lessons.filter((lesson: any) => lesson?.paymentVerifiedAt || lesson?.paid === true).length
+          + students.filter((student: any) => Number(student?.packagePaid ?? 0) > 0).length;
         participants.push({
           id: user.id, name: [user.first_name,user.last_name].filter(Boolean).join(" ") || workspaceName || "Участник",
           telegramUsername: user.telegram_username, status: user.beta_status,
           onboardingComplete: Boolean(document?.data?.state?.profile?.onboardingComplete),
           lastActiveAt: user.last_active_at, workspaceUpdatedAt: document?.data?.updated_at ?? null,
           appVersion: user.app_version, platform: user.platform,
+          metrics: {
+            students: students.length,
+            lessons: lessons.length,
+            completedLessons: completedLessons.length,
+            reports: reports.length,
+            reviewedReports: reviewedReports.length,
+            paymentActions,
+            subscriptionsRenewed: students.reduce((sum: number, student: any) => sum + (Array.isArray(student?.subscriptionHistory) ? student.subscriptionHistory.length : 0), 0),
+          },
         });
       }
       const feedback = await admin.from("beta_feedback").select("id", { count: "exact", head: true }).eq("status", "new");
       const activeInvites = await admin.from("beta_invites").select("id", { count: "exact", head: true }).is("claimed_at", null).is("revoked_at", null).gt("expires_at", new Date().toISOString());
-      return json({ ok: true, participants, newFeedback: feedback.count ?? 0, activeInvites: activeInvites.count ?? 0 });
+      const invites = await admin.from("beta_invites").select("claimed_at,revoked_at,expires_at");
+      if (feedback.error || activeInvites.error || invites.error) throw feedback.error ?? activeInvites.error ?? invites.error;
+      const now = Date.now();
+      const activeSince = now - 7 * 86400_000;
+      const aggregate = {
+        invited: invites.data?.length ?? 0,
+        claimed: (invites.data ?? []).filter((invite) => invite.claimed_at).length,
+        active7d: participants.filter((participant) => participant.lastActiveAt && new Date(participant.lastActiveAt).getTime() >= activeSince).length,
+        onboarded: participants.filter((participant) => participant.onboardingComplete).length,
+        addedStudent: participants.filter((participant) => participant.metrics.students > 0).length,
+        createdLesson: participants.filter((participant) => participant.metrics.lessons > 0).length,
+        usedReports: participants.filter((participant) => participant.metrics.reports > 0).length,
+        usedPayments: participants.filter((participant) => participant.metrics.paymentActions > 0).length,
+        totalStudents: participants.reduce((sum, participant) => sum + participant.metrics.students, 0),
+        totalLessons: participants.reduce((sum, participant) => sum + participant.metrics.lessons, 0),
+        totalReports: participants.reduce((sum, participant) => sum + participant.metrics.reports, 0),
+      };
+      return json({ ok: true, participants, aggregate, newFeedback: feedback.count ?? 0, activeInvites: activeInvites.count ?? 0 });
     }
 
     if (action === "notification-action") {

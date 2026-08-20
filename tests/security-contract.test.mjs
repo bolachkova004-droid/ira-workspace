@@ -93,6 +93,24 @@ test("student reminders never fall back to the teacher", () => {
   assert.match(worker, /if \(input\.studentId && !linkId\) return false;/);
 });
 
+test("student Telegram index repairs without rewriting protected identity columns", () => {
+  assert.match(common, /export async function syncStudentIndex/);
+  assert.match(common, /student_name: studentName,[\s\S]*?updated_at: updatedAt/);
+  assert.doesNotMatch(common, /from\("student_links"\)\.upsert/);
+  assert.match(api, /return await syncStudentIndex\(ctx\.db, ctx\.workspaceId, state\)/);
+  assert.match(api, /action === "invite"[\s\S]*?await syncStudentLinks\(ctx, document\.data\?\.state \?\? \{\}\)/);
+  assert.match(worker, /await syncStudentIndex\(admin, workspace\.data\.id, document\.state \?\? \{\}\)/);
+  assert.match(frontend, /Telegram подключён у/);
+  assert.match(frontend, /Уведомления приходят только после активации личной ссылки учеником/);
+});
+
+test("stale blocked notifications are dismissed before a student reconnects", () => {
+  assert.match(worker, /function notificationExpiryMs/);
+  assert.match(worker, /lesson_created", "lesson_rescheduled", "lesson_cancelled"/);
+  assert.match(worker, /ageMs > notificationExpiryMs\(String\(event\.kind\)\)/);
+  assert.match(worker, /status: "dismissed", error: "Reminder expired"/);
+});
+
 test("overdue Rasmus lessons receive idempotent automatic reports and derived payment checks", () => {
   assert.match(worker, /completeAutomaticReports/);
   assert.match(worker, /applyAutomaticReports/);
@@ -137,7 +155,7 @@ test("published HTML files and health version match the release", () => {
   assert.equal(read("docs/index.html"), frontend);
   assert.equal(read("docs/404.html"), frontend);
   const health = JSON.parse(read("docs/health.json"));
-  assert.equal(health.version, "8.2.0-beta.1");
+  assert.equal(health.version, "8.3.1-beta.1");
 });
 
 test("branded launch screen uses the Rasmus emblem", () => {
@@ -163,4 +181,14 @@ test("fast accounting supports report review, payments, subscriptions and gender
   assert.match(frontend, /subscriptionHistory/);
   assert.match(frontend, /function studentGrammar/);
   assert.match(frontend, /Она: оплатила, ей напомнить/);
+});
+
+test("focus-group analytics exposes aggregate usage without cabinet contents", () => {
+  assert.match(frontend, /function betaAnalyticsView/);
+  assert.match(frontend, /Аналитика beta/);
+  assert.match(api, /aggregate = \{/);
+  assert.match(api, /usedReports:/);
+  assert.match(api, /usedPayments:/);
+  assert.doesNotMatch(api, /participants\.push\([\s\S]*?studentNames/);
+  assert.match(frontend, /Имена учеников, суммы, расписание, отчёты и заметки тестировщиков не передаются/);
 });
